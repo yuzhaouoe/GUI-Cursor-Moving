@@ -1,0 +1,3 @@
+proj_dir: /mnt/ceph_rbd/GUI-Cursor-Moving
+data_dir: /mnt/ceph_rbd/data
+output_dir: /mnt/ceph_rbd/output
