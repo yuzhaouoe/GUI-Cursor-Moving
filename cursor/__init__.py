@@ -1,5 +1,6 @@
 import yaml
 from pathlib import Path
+import os
 
 with open("proj_config.yaml", "r") as f:
     CONFIG = yaml.safe_load(f)
@@ -7,3 +8,4 @@ with open("proj_config.yaml", "r") as f:
 PROJ_DIR = Path(CONFIG["proj_dir"])
 DATA_DIR = Path(CONFIG["data_dir"])
 OUTPUT_DIR = Path(CONFIG["output_dir"])
+os.environ["HF_TOKEN"] = CONFIG["hf_token"]

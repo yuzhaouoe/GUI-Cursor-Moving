@@ -1,4 +1,4 @@
 proj_dir: /mnt/ceph_rbd/GUI-Cursor-Moving
 data_dir: /mnt/ceph_rbd/data
 output_dir: /mnt/ceph_rbd/output
-# hf_token: # Set HF_TOKEN environment variable instead
+hf_token: null
