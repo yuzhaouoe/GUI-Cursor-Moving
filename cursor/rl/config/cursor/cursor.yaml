@@ -1,0 +1,7 @@
+system_prompt_format_path: cursor/prompts/system_prompt.txt
+first_turn_prompt_format_path: cursor/prompts/query_prompt.txt
+reply_prompt_format_path: cursor/prompts/none.txt
+action_extractor_fn_name: coord_answer_tag
+message_history_update_fn_name: qwen
+cursor_image_path: cursor/resources/cursor-icon-cropped.png
+max_steps: 3

@@ -1,3 +1,15 @@
 *egg-info
 __pycache__/
 proj_config.yaml
+tmp/
+tmp.py
+outputs/
+checkpoints/
+logs/
+validation_outputs/
+wandb/
+tmp.py
+tmp.jsonl
+tmp.json
+tmp.png
+tmp.txt

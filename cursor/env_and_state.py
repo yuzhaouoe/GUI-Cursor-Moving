@@ -24,7 +24,7 @@ logging.basicConfig(
     datefmt="%m/%d/%Y %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(level=logging.DEBUG)
+logger.setLevel(level=logging.WARNING)
 
 
 
@@ -52,7 +52,9 @@ class Environment:
         max_global_steps: Optional[int] = None,
         cursor_focus_sizes: Optional[int | float] = None,
         cursor_center_crop_size: Optional[int] = None,
-        focuse_type: Optional[str] = None,
+        focus_type: Optional[str] = None,
+        store_message_history: bool = True,
+        store_tokenized_ids_and_mm_inputs: bool = False,
     ):
         # if max_tokens_per_img is not None:
         if cursor_focus_sizes is not None or cursor_center_crop_size is not None:
@@ -111,11 +113,14 @@ class Environment:
         # self.min_x_pos = cursor_w // 2
         # self.min_y_pos = cursor_h // 2
         self.cursor_focus_sizes = cursor_focus_sizes
-        if focuse_type is None:
+        if focus_type is None:
             self.focus_type = os.environ.get("FOCUS_TYPE", None)
         else:
-            self.focus_type = focuse_type
+            self.focus_type = focus_type
         self.cursor_center_crop_size = cursor_center_crop_size
+
+        self.store_message_history = store_message_history
+        self.store_tokenized_ids_and_mm_inputs = store_tokenized_ids_and_mm_inputs
 
     def __repr__(self):
         return f"Environment(name={self.name})"
@@ -158,13 +163,17 @@ class State:
             cursor_x=init_cursor_x,
             cursor_y=init_cursor_y,
         )
-        self.message_history = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-        ]
 
+        if environment.store_message_history:
+            self.message_history = [
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+            ]
+        else:
+            self.message_history = None
+        
         self.environment: Environment = environment
         self.item_idx = environment.item_idx
         self.save_obs = save_obs
@@ -201,6 +210,13 @@ class State:
             self.position_history_global, self.message_history_global = None, None
             self.focus_left_top_history = None
 
+        if self.environment.store_tokenized_ids_and_mm_inputs:
+            self.tokenized_ids = []
+            self.multi_modal_inputs = {"image": []}
+        else:
+            self.tokenized_ids = None
+            self.multi_modal_inputs = None
+
     @classmethod
     def from_state(cls, state: "State"):
         """
@@ -235,8 +251,8 @@ class State:
     def _extract_action_and_update_cursor(self, observation, text_input, output_text):
         logger.debug(f"step {self.step_idx} - llm response: {output_text}")
         extractor = self.environment.action_extractor_fn
-        message_history_update_fn = self.environment.message_history_update_fn
 
+        message_history_update_fn = self.environment.message_history_update_fn
         self.message_history = message_history_update_fn(
             observation=observation,
             text_input=text_input,
@@ -527,7 +543,7 @@ class State:
         if return_preds:
             return preds
 
-    def observe(self) -> Tuple[Image.Image, str, List[dict]]:
+    def observe(self, return_message_inputs=True) -> Tuple[Image.Image, str, List[dict]]:
         environment = self.environment
 
         observation = self.get_screenshot_observation(add_bbox=environment.add_bounding_box)
@@ -567,19 +583,22 @@ class State:
 
             text_input = text_input.strip()
 
-        # get message_inputs in observe() does not change the state's message_history
-        # we need to update the state's message_history in update_state()
-        message_history_update_fn = self.environment.message_history_update_fn
-        message_inputs = message_history_update_fn(
-            observation=observation,
-            text_input=text_input,
-            message_history=self.message_history,
-            output_text=None,  # No output text at this point
-        )
-        assert message_inputs != self.message_history, "they are different objects"
+        if return_message_inputs:
+            # get message_inputs in observe() does not change the state's message_history
+            # we need to update the state's message_history in update_state()
+            message_history_update_fn = self.environment.message_history_update_fn
+            message_inputs = message_history_update_fn(
+                observation=observation,
+                text_input=text_input,
+                message_history=self.message_history,
+                output_text=None,  # No output text at this point
+            )
+            assert message_inputs != self.message_history, "they are different objects"
 
-        if self.environment.latest_screen_only:
-            message_inputs = keep_last_n_images(message_inputs, n=1)
+            if self.environment.latest_screen_only:
+                message_inputs = keep_last_n_images(message_inputs, n=1)
+        else:
+            message_inputs = None
         return observation, text_input, message_inputs
 
     def is_within_bbox(self) -> bool:
@@ -726,6 +745,7 @@ def convert_image_to_cursor_position(message_history, position_history, release_
         # do not release image, keep the original message_history
         message_history = deepcopy(message_history)
     image_idx = 0
+    images_to_close = []  # Collect PIL images to close
     for msg_idx in range(len(message_history)):
         msg = message_history[msg_idx]
         content = msg["content"]
@@ -737,6 +757,9 @@ def convert_image_to_cursor_position(message_history, position_history, release_
                     keys.remove("type")
                     assert len(keys) == 1
                     image_key = keys[0]
+                    # Collect PIL image for cleanup if release_image is True
+                    if release_image and hasattr(cur_content[image_key], 'close'):
+                        images_to_close.append(cur_content[image_key])
                     cursor_position = position_history[image_idx]
                     cur_content[image_key] = cursor_position
                     image_idx += 1
@@ -747,10 +770,22 @@ def convert_image_to_cursor_position(message_history, position_history, release_
                 keys.remove("type")
                 assert len(keys) == 1
                 image_key = keys[0]
+                # Collect PIL image for cleanup if release_image is True
+                if release_image and hasattr(msg["content"][image_key], 'close'):
+                    images_to_close.append(msg["content"][image_key])
                 msg["content"][image_key] = cursor_position
                 image_idx += 1
         else:
             assert isinstance(content, str)
+    
+    # Close all PIL images to release memory
+    if release_image:
+        for img in images_to_close:
+            try:
+                img.close()
+            except:
+                pass
+    
     # assert image_idx == len(position_history)
     return message_history
 

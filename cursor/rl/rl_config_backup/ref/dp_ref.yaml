@@ -1,0 +1,162 @@
+# Base reference model configuration
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Strategy
+strategy: ${actor_rollout_ref.actor.strategy}
+
+# Use torch compile
+use_torch_compile: ${oc.select:actor_rollout_ref.actor.use_torch_compile,true}
+
+# Log prob micro batch size
+log_prob_micro_batch_size: null
+
+# Log prob micro batch size per GPU
+log_prob_micro_batch_size_per_gpu: null
+
+# Log prob use dynamic batch size
+log_prob_use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
+
+# Log prob max token length per GPU
+log_prob_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
+
+# Profiler configuration
+profiler:
+
+  # Target class for profiler config
+  _target_: verl.utils.profiler.ProfilerConfig
+
+  # Profiler tool
+  tool: ${oc.select:global_profiler.tool,null}
+
+  # Enable profiler
+  enable: false
+
+  # All ranks
+  all_ranks: false
+
+  # Ranks
+  ranks: []
+
+  # Save path
+  save_path: ${oc.select:global_profiler.save_path,null}
+
+  # Tool config
+  tool_config:
+
+    # NSight Systems config
+    nsys:
+
+      # Target class for NSight tool config
+      _target_: verl.utils.profiler.config.NsightToolConfig
+
+      # Discrete
+      discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete}
+
+    # NPU config
+    npu:
+
+      # Target class for NPU tool config
+      _target_: verl.utils.profiler.config.NPUToolConfig
+
+      # Contents
+      contents: []
+
+      # Level
+      level: level1
+
+      # Analysis
+      analysis: true
+
+      # Discrete
+      discrete: false
+
+    # Torch profiler config
+    torch:
+
+      # Target class for torch profiler tool config
+      _target_: verl.utils.profiler.config.TorchProfilerToolConfig
+
+      # Step start
+      step_start: 0
+
+      # Step end
+      step_end: null
+
+    # Torch memory config
+    torch_memory:
+
+      # Target class for torch memory tool config
+      _target_: verl.utils.profiler.config.TorchMemoryToolConfig
+
+      # Trace alloc max entries
+      trace_alloc_max_entries: ${oc.select:global_profiler.global_tool_config.torch_memory.trace_alloc_max_entries,100000}
+
+      # Stack depth
+      stack_depth: ${oc.select:global_profiler.global_tool_config.torch_memory.stack_depth,32}
+
+# FSDP configuration
+fsdp_config:
+
+  # Target class for FSDP engine config
+  _target_: verl.workers.config.FSDPEngineConfig
+
+  # Wrap policy
+  wrap_policy:
+
+    # Minimum number of parameters
+    min_num_params: 0
+
+  # Parameter offload
+  param_offload: false
+
+  # Optimizer offload
+  optimizer_offload: false
+
+  # Offload policy
+  offload_policy: false
+
+  # Reshard after forward
+  reshard_after_forward: true
+
+  # FSDP size
+  fsdp_size: -1
+
+  # Forward prefetch
+  forward_prefetch: false
+
+  # Model dtype
+  model_dtype: fp32
+
+  # Use original parameters
+  use_orig_params: false
+
+  # Ulysses sequence parallel size
+  ulysses_sequence_parallel_size: 1
+
+  # Entropy from logits with chunking
+  entropy_from_logits_with_chunking: false
+
+  # Use torch compile
+  use_torch_compile: true
+
+  # Entropy checkpointing
+  entropy_checkpointing: false
+
+  # Forward only
+  forward_only: false
+
+  # Strategy
+  strategy: fsdp
+
+# Model
+model: null
+
+# Ulysses sequence parallel size
+ulysses_sequence_parallel_size: ${oc.select:actor_rollout_ref.actor.ulysses_sequence_parallel_size,1}
+
+# Entropy from logits with chunking
+entropy_from_logits_with_chunking: false

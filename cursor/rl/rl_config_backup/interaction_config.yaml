@@ -1,0 +1,4 @@
+interaction:
+  - name: "cursor_moving"
+    class_name: "cursor.rl.cursor_interaction.Gsm8kInteraction"
+    config: {}
