@@ -18,3 +18,6 @@ EOF
 
 apt-get install byobu -y
 apt-get install nvtop -y
+
+git config --global user.email yuzhaouoe@gmail.com
+git config --global user.name yuzhaouoe
