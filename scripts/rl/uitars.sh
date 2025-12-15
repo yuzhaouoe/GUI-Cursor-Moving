@@ -8,7 +8,7 @@ export VLLM_USE_V1=1
 
 MAX_TURNS=4
 TRAIN_BATCH_SIZE=32
-ROLLOUT_N=8
+ROLLOUT_N=16
 AGENT_NUM_WORKERS=8
 # PPO_MINI_BATCH_SIZE=$((TRAIN_BATCH_SIZE * ROLLOUT_N))
 # ACTOR_DTYPE=bfloat16
@@ -69,7 +69,7 @@ PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
  trainer.nnodes=1 \
  trainer.project_name=$PROJECT_NAME \
  trainer.experiment_name=$EXP_NAME \
- trainer.save_freq=50 \
+ trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_epochs=250 2>&1 | tee verl_demo.log
 

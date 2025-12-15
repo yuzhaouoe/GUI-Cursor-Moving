@@ -1,5 +1,5 @@
 git clone https://github.com/yuzhaouoe/verl.git
-pip install vllm
+pip install vllm==0.11.0
 pip install flash-attn --no-build-isolation
 pip install flashinfer-python
 pip install qwen_vl_utils
@@ -7,6 +7,8 @@ pip install ipython
 pip install debugpy
 pip install -e .
 pip install -e ./verl
+pip install transformers==4.57.3
+pip install flask
 
 cat >> ~/.bashrc << 'EOF'
 

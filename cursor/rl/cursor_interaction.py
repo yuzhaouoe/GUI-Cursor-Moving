@@ -61,6 +61,44 @@ from cursor.move_loop import init_environment_and_state
 from cursor.move_loop import ACTION_EXTRACTOR_FN, MESSAGE_HISTORY_UPDATE_FN
 from cursor.move_loop import observe_get_raw_message_input, observe_get_message_input
 
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+import time
+
+
+def process_multi_modal_sample(idx, input_ids, images, tokenizer, processor):
+    current_text = tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
+    current_multi_modal_inputs = processor(text=[current_text], images=images, return_tensors="pt")
+    current_multi_modal_inputs.pop("input_ids", None)
+    current_multi_modal_inputs.pop("attention_mask", None)
+    return idx, dict(current_multi_modal_inputs)
+
+
+def process_dataproto_multi_modal_inputs(output: DataProto, tokenizer, processor):
+    multi_modal_data = output.non_tensor_batch["multi_modal_data"]
+    batch_size = len(output)
+
+    multi_modal_inputs = [None] * batch_size
+    max_workers = min(batch_size, os.cpu_count())
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                process_multi_modal_sample,
+                idx,
+                output.batch["input_ids"][idx : idx + 1],
+                multi_modal_data[idx]["image"],
+                tokenizer,
+                processor,
+            )
+            for idx in range(batch_size)
+        ]
+        for future in as_completed(futures):
+            idx, result = future.result()
+            multi_modal_inputs[idx] = result
+
+    output.non_tensor_batch.pop("multi_modal_data")
+    output.non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs, dtype=object)
+
 
 def get_logit_bias(processor, processor_name):
     image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
@@ -124,32 +162,32 @@ class CursorAgentLoop(AgentLoopBase):
         self.reply_prompt_format = open(self.cursor_config.reply_prompt_format_path, "r").read()
         self.action_extractor_fn = ACTION_EXTRACTOR_FN[self.cursor_config.action_extractor_fn_name]
         self.message_history_update_fn = MESSAGE_HISTORY_UPDATE_FN[self.cursor_config.message_history_update_fn_name]
+        self.base_model_name = self.cursor_config.base_model_name
 
     async def init_state(self, kwargs):
         """
         Note that we also return the raw_input_ids so that it can be combined with other chat template
         """
-        # image_path = kwargs["image_path"]
-        image = kwargs["image"]
+        image_path = kwargs["image_path"]
+        # image = kwargs["image"]
         query = kwargs["query"]
         bbox_proportions = kwargs["bbox_proportions"]
         item_idx = kwargs["uid"]
 
         # begin process image
-        # image = Image.open(image_path).convert("RGB")
-        # min_tokens_per_img = 512
-        # max_tokens_per_img = 2691  # (1092 // 28) * (1932 // 28)
-        # width, height = image.size
-        # resized_height, resized_width = smart_resize(
-        #     height,
-        #     width,
-        #     factor=28,
-        #     min_pixels=min_tokens_per_img * 28 * 28 if min_tokens_per_img else 0,
-        #     max_pixels=max_tokens_per_img * 28 * 28 if max_tokens_per_img else 16384 * 28 * 28,
-        # )
-        # image = image.resize((resized_width, resized_height))
+        image = Image.open(image_path).convert("RGB")
+        min_tokens_per_img = 512
+        max_tokens_per_img = 2691  # (1092 // 28) * (1932 // 28)
+        width, height = image.size
+        resized_height, resized_width = smart_resize(
+            height,
+            width,
+            factor=28,
+            min_pixels=min_tokens_per_img * 28 * 28 if min_tokens_per_img else 0,
+            max_pixels=max_tokens_per_img * 28 * 28 if max_tokens_per_img else 16384 * 28 * 28,
+        )
+        image = image.resize((resized_width, resized_height))
         # end process image
-
 
         example = {
             "image": image,
@@ -168,6 +206,7 @@ class CursorAgentLoop(AgentLoopBase):
             max_steps=self.cursor_config.max_steps,
             max_global_steps=None,
             output_dir=None,
+            base_model_name=self.base_model_name,
         )
         return state
 
@@ -179,8 +218,8 @@ class CursorAgentLoop(AgentLoopBase):
         # image_data = (kwargs.get("multi_modal_data") or {}).get("image", None)
         metrics = {}
         request_id = uuid4().hex  # consider to change to example_idx-trajectory_idx-turn_idx
-
-        sampling_params.update({"logit_bias": self.logit_bias, "max_tokens": 512})
+        is_validate = kwargs["validate"]
+        sampling_params.update({"logit_bias": self.logit_bias, "max_tokens": 1024})
 
         # if kwargs["validate"] is False:
         #     state: State = deepcopy(kwargs["state"])  # avoid sharing same state with different generation
@@ -235,6 +274,10 @@ class CursorAgentLoop(AgentLoopBase):
         initial_prompt_ids = None
         total_num_turns = 0
         num_actions = 0
+        # if is_validate:
+        state.hint_to_move = False
+        # else:
+        #     state.hint_to_move = random.choice([True, False])
         with simple_timer("generate_sequences", metrics):
 
             while True:
@@ -325,6 +368,11 @@ class CursorAgentLoop(AgentLoopBase):
 
                     num_actions += 1
 
+                    if state.hint_to_move and state.is_finished:
+                        state.hint_to_move = False
+                        # mask all the context
+                        assistant_mask = [0] * len(assistant_mask)
+
         assert len(cur_input_ids) == len(assistant_mask)
         # breakpoint()
         # print(f"Total number of turns: {total_num_turns}")
@@ -387,6 +435,7 @@ class CursorLoopWorker(AgentLoopWorkerBase):
         """
         super().__init__(config, server_handles, reward_router_address)
 
+    # @ray.method(tensor_transport="object_store")
     @tqbridge()
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
@@ -436,21 +485,104 @@ class CursorLoopWorker(AgentLoopWorkerBase):
             batch.meta_info.get("global_steps", -1), index.tolist(), batch.meta_info.get("validate", False)
         )
         # self.tokenizer = hf_tokenizer("/mnt/ceph_rbd/models/GUI-Cursor_resaved")
-        self.tokenizer = hf_tokenizer("Qwen/Qwen2.5-VL-7B-Instruct")
-        # self.tokenizer.chat_template = "{% set image_count = namespace(value=0) %}{% set video_count = namespace(value=0) %}{% for message in messages %}{% if loop.first and message['role'] != 'system' %}<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n{% endif %}<|im_start|>{{ message['role'] }}\n{% if message['content'] is string %}{{ message['content'] }}<|im_end|>\n{% else %}{% for content in message['content'] %}{% if content['type'] == 'image' or 'image' in content or 'image_url' in content %}{% set image_count.value = image_count.value + 1 %}{% if add_vision_id %}Picture {{ image_count.value }}: {% endif %}<|vision_start|><|image_pad|><|vision_end|>{% elif content['type'] == 'video' or 'video' in content %}{% set video_count.value = video_count.value + 1 %}{% if add_vision_id %}Video {{ video_count.value }}: {% endif %}<|vision_start|><|video_pad|><|vision_end|>{% elif 'text' in content %}{{ content['text'] }}{% endif %}{% endfor %}<|im_end|>\n{% endif %}{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n <think>{% endif %}"
+        # self.tokenizer = hf_tokenizer("Qwen/Qwen2.5-VL-7B-Instruct")
 
         tasks = []
         for i in range(len(batch)):
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
 
+
+        # start_gather_time = time.perf_counter()
         outputs = await asyncio.gather(*tasks)
+        # end_gather_time = time.perf_counter()
+        # print(f"[CursorAgentLoopManager] ray.gather time: {end_gather_time - start_gather_time:.2f}s")
 
         if batch.meta_info.get("validate", False):
             output = self._val_postprocess(outputs)
         else:
             output = self._postprocess(outputs)
+        # convert to dict
+        # batch, non_tensor_batch, meta_info = output.model_dump().values()
+        # breakpoint()
+
+        # to dict
+        # batch_output = {
+        #     f"$batch${k}": v for k, v in output.batch.items()
+        # }
+        # non_tensor_batch_output = {
+        #     f"$non_tensor_batch${k}": v for k, v in output.non_tensor_batch.items()
+        # }
+        # output.non_tensor_batch["multi_modal_inputs"] = None
+
         return output
+
+    def _postprocess(self, inputs: list[_InternalAgentLoopOutput]) -> DataProto:
+        """Process the padded outputs from _run_agent_loop and combine them into a batch."""
+        # Convert lists back to tensors and stack them to create a batch.
+        prompt_ids = torch.cat([input.prompt_ids for input in inputs], dim=0)
+        response_ids = torch.cat([input.response_ids for input in inputs], dim=0)
+        response_mask = torch.cat([input.response_mask for input in inputs], dim=0)
+        attention_mask = torch.cat([input.attention_mask for input in inputs], dim=0)
+        input_ids = torch.cat([input.input_ids for input in inputs], dim=0)
+        position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
+        optional_outputs = {}
+        if inputs[0].response_logprobs is not None:
+            optional_outputs["rollout_log_probs"] = torch.cat([input.response_logprobs for input in inputs], dim=0)
+        # breakpoint()
+        batch = TensorDict(
+            {
+                "prompts": prompt_ids,  # [bsz, prompt_length]
+                "responses": response_ids,  # [bsz, response_length]
+                "response_mask": response_mask,  # [bsz, response_length]
+                "input_ids": input_ids,  # [bsz, prompt_length + response_length]
+                "attention_mask": attention_mask,  # [bsz, prompt_length + response_length]
+                # position_ids: [bsz, 3, prompt_length + response_length] or [bsz, prompt_length + response_length]
+                "position_ids": position_ids,
+                **optional_outputs,
+            },
+            batch_size=len(inputs),
+        )
+
+        scores = [input.reward_score for input in inputs]
+        if all(score is not None for score in scores):
+            prompt_length = prompt_ids.size(1)
+            response_length = attention_mask[:, prompt_length:].sum(dim=1) - 1
+            rm_scores = torch.zeros_like(response_mask, dtype=torch.float32)
+            rm_scores[torch.arange(response_mask.size(0)), response_length] = torch.tensor(scores, dtype=torch.float32)
+            batch["rm_scores"] = rm_scores
+
+        non_tensor_batch = {
+            "__num_turns__": np.array([input.num_turns for input in inputs], dtype=np.int32),
+        }
+
+        # add reward_extra_info to non_tensor_batch
+        reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
+        reward_extra_keys = list(reward_extra_infos[0].keys())
+        for key in reward_extra_keys:
+            non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos])
+
+        # Add multi_modal_inputs to non_tensor_batch if any samples have them
+        # multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
+        # if any(mmi is not None for mmi in multi_modal_inputs_list):
+        #     non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
+        non_tensor_batch["multi_modal_data"] = np.array([input.multi_modal_data for input in inputs], dtype=object)
+
+        metrics = [input.metrics.model_dump() for input in inputs]
+        # Collect extra fields from all inputs and convert them to np.ndarray
+        extra_fields = {}
+        all_keys = set(key for input_item in inputs for key in input_item.extra_fields)
+        for key in all_keys:
+            temp_arr = np.empty(len(inputs), dtype=object)
+            temp_arr[:] = [input.extra_fields.get(key) for input in inputs]
+            extra_fields[key] = temp_arr
+
+        non_tensor_batch.update(extra_fields)
+        return DataProto(
+            batch=batch,
+            non_tensor_batch=non_tensor_batch,
+            meta_info={"metrics": metrics, "reward_extra_keys": reward_extra_keys},
+        )
 
     def _val_postprocess(self, inputs: list[_InternalCursorLoopOutput]) -> DataProto:
         """Process the padded outputs from _run_agent_loop and combine them into a batch."""
@@ -505,6 +637,10 @@ class CursorLoopWorker(AgentLoopWorkerBase):
         agent_name: str,
         **kwargs,
     ) -> _InternalAgentLoopOutput:
+        import uuid, time
+
+        # loop_uid = uuid.uuid4()
+        # loop_start_time = time.perf_counter()
         with rollout_trace_attr(
             step=trajectory["step"],
             sample_index=trajectory["sample_index"],
@@ -525,18 +661,24 @@ class CursorLoopWorker(AgentLoopWorkerBase):
                 tokenizer=self.tokenizer,
                 processor=self.processor,
             )
+
+            # start_generate_time = time.perf_counter()
             output: AgentLoopOutput = await agent_loop.run(sampling_params, validate=is_validate, **kwargs)
+            # end_generate_time = time.perf_counter()
+            # print(
+            #     f"[CursorLoopWorker] loop_uid: {loop_uid} generate time: {end_generate_time - start_generate_time:.2f}s"
+            # )
 
             if is_validate:
-                prompt_input_ids= None
+                prompt_input_ids = None
                 response_input_ids = None
                 input_ids = None
-                response_mask=None
-                attention_mask=None
-                response_logprobs=None
-                multi_modal_inputs=None
-                multi_modal_data=None
-                position_ids=None
+                response_mask = None
+                attention_mask = None
+                response_logprobs = None
+                multi_modal_inputs = None
+                multi_modal_data = None
+                position_ids = None
             else:
                 self.tokenizer.padding_side = "left"
                 prompt_output = self.tokenizer.pad(
@@ -582,6 +724,7 @@ class CursorLoopWorker(AgentLoopWorkerBase):
                 input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
 
                 multi_modal_inputs = None
+                multi_modal_data = output.multi_modal_data
                 if (
                     self.processor is not None
                     and "Qwen2VLImageProcessor" in self.processor.image_processor.__class__.__name__
@@ -591,7 +734,7 @@ class CursorLoopWorker(AgentLoopWorkerBase):
                     else:
                         from verl.models.transformers.qwen2_vl import get_rope_index
 
-                    images = output.multi_modal_data.get("image", None)
+                    images = multi_modal_data.get("image", None)
                     current_text = self.tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
                     multi_modal_inputs = self.processor(text=[current_text], images=images, return_tensors="pt")
                     multi_modal_inputs.pop("input_ids", None)
@@ -624,7 +767,7 @@ class CursorLoopWorker(AgentLoopWorkerBase):
                 else:
                     position_ids = compute_position_id_with_mask(attention_mask)  # (1, seq_len)
 
-                prompt_input_ids= prompt_output["input_ids"]
+                prompt_input_ids = prompt_output["input_ids"]
                 response_input_ids = response_output["input_ids"]
 
             state: State = output.extra_fields.pop("state")
@@ -655,6 +798,8 @@ class CursorLoopWorker(AgentLoopWorkerBase):
 
             del state, output
 
+            # loop_end_time = time.perf_counter()
+            # print(f"[CursorLoopWorker] loop_uid: {loop_uid} total loop time: {loop_end_time - loop_start_time:.2f}s")
             return _InternalCursorLoopOutput(
                 prompt_ids=prompt_input_ids,
                 response_ids=response_input_ids,
@@ -663,8 +808,8 @@ class CursorLoopWorker(AgentLoopWorkerBase):
                 response_mask=response_mask,
                 attention_mask=attention_mask,
                 response_logprobs=response_logprobs,
-                multi_modal_inputs=multi_modal_inputs,
-                multi_modal_data=None,  # output.multi_modal_data,
+                multi_modal_inputs=None,  # multi_modal_inputs,
+                multi_modal_data=multi_modal_data,  # output.multi_modal_data,
                 reward_score=reward_score,
                 num_turns=num_turns,
                 metrics=metrics,
@@ -678,12 +823,16 @@ class CursorAgentLoopManager(AgentLoopManager):
         self.agent_loop_workers_class = CursorLoopWorker
         super().__init__(config, worker_group=worker_group, rm_wg=rm_wg)
 
+        local_path = copy_to_local(config.actor_rollout_ref.model.path)
+        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
+        self.processor = hf_processor(local_path, trust_remote_code=True)
+
     def outside_wakeup(self):
         if self.config.actor_rollout_ref.rollout.free_cache_engine:
             self.wake_up()
         if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
             self.reward_model_manager.wake_up()
-    
+
     def outside_sleep(self):
         if self.config.actor_rollout_ref.rollout.free_cache_engine:
             self.sleep()
@@ -706,12 +855,60 @@ class CursorAgentLoopManager(AgentLoopManager):
         #     self.reward_model_manager.wake_up()
 
         chunkes = prompts.chunk(len(self.agent_loop_workers))
-        outputs = ray.get(
-            [
-                worker.generate_sequences.remote(chunk)
-                for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
-            ]
-        )
+
+        start_get_time = time.perf_counter()
+
+        outputs = [None] * len(self.agent_loop_workers)  # Pre-allocate with correct size
+        workers_outputs_refs = [
+            worker.generate_sequences.remote(chunk)
+            for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
+        ]
+
+        # Create mapping from ref to original index
+        ref_to_index = {ref: idx for idx, ref in enumerate(workers_outputs_refs)}
+
+        # get_time = time.perf_counter()
+        processing_futures = []
+        processing_executor = ThreadPoolExecutor(max_workers=len(self.agent_loop_workers))
+        
+        while workers_outputs_refs:
+            ready_object_refs, workers_outputs_refs = ray.wait(workers_outputs_refs, num_returns=1)
+            worker_outputs: List[DataProto] = ray.get(ready_object_refs)
+            original_idx = ref_to_index[ready_object_refs[0]]
+            cur_outputs = worker_outputs[0]
+
+            # Process multi-modal inputs using ThreadPoolExecutor in background
+            future = processing_executor.submit(
+                process_dataproto_multi_modal_inputs,
+                cur_outputs, 
+                self.tokenizer, 
+                self.processor
+            )
+            processing_futures.append((original_idx, cur_outputs, future))
+
+            # print(
+            #     f"[CursorAgentLoopManager] ray.wait one worker time: {time.perf_counter() - get_time:.2f}s, worker index: {original_idx}"
+            # )
+
+        # print(f"[CursorAgentLoopManager] Waiting for {len(processing_futures)} processing tasks to complete...")
+
+        process_start_time = time.perf_counter()
+        # Wait for all futures to complete
+        wait([future for _, _, future in processing_futures])
+        
+        # process_end_time = time.perf_counter()
+        # print(f"[CursorAgentLoopManager] All processing tasks completed in {process_end_time - process_start_time:.2f}s")
+        
+        # Store outputs in correct order (futures are already done)
+        for original_idx, cur_outputs, future in processing_futures:
+            future.result()  # Ensure no exceptions, output already modified in-place
+            outputs[original_idx] = cur_outputs
+
+        processing_executor.shutdown(wait=True)
+
+        end_get_time = time.perf_counter()
+
+        # print(f"[CursorAgentLoopManager] Total ray.get + processing time: {end_get_time - start_get_time:.2f}s")
         
         output = DataProto.concat(outputs)
 
@@ -727,7 +924,7 @@ class CursorAgentLoopManager(AgentLoopManager):
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
 
         del outputs, metrics, chunkes
-        
+
         return output
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
@@ -753,3 +950,24 @@ class CursorAgentLoopManager(AgentLoopManager):
             timing["agent_loop/slowest/response_length"] = attention_mask[prompt_length:].sum().item()
 
         return timing
+
+
+def multi_modal_inputs_list_size(multi_modal_inputs_list):
+    # Calculate total memory
+    total_mm_bytes = 0
+    for mmi in multi_modal_inputs_list:
+        if mmi is not None:
+            for key, tensor in mmi.items():
+                if isinstance(tensor, torch.Tensor):
+                    total_mm_bytes += tensor.numel() * tensor.element_size()
+
+    print(f"Multi-modal inputs memory: {total_mm_bytes / (1024 ** 2):.2f} MB")
+
+
+def get_tensordict_memory(batch: TensorDict) -> int:
+    """Get total memory usage in bytes."""
+    total_bytes = 0
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            total_bytes += value.numel() * value.element_size()
+    return total_bytes

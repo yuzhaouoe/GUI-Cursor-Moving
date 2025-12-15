@@ -40,21 +40,18 @@ def prepare_input(sample, processor):
     bbox_proportions = sample["bbox_proportions"]
 
     width, height = image.width, image.height
-    resized_height, resized_width = smart_resize(
-        image.height,
-        image.width,
-        factor=processor.image_processor.patch_size * processor.image_processor.merge_size,
-        min_pixels=processor.image_processor.min_pixels,
-        max_pixels=processor.image_processor.max_pixels,
-    )
-    resized_image = image.resize((resized_width, resized_height))
-    bbox_coords = [
-        int(bbox_proportions[0] * resized_width),
-        int(bbox_proportions[1] * resized_height),
-        int(bbox_proportions[2] * resized_width),
-        int(bbox_proportions[3] * resized_height),
-    ]
 
+    if bbox_proportions is not None:
+        bbox_coords = [
+            int(bbox_proportions[0] * width),
+            int(bbox_proportions[1] * height),
+            int(bbox_proportions[2] * width),
+            int(bbox_proportions[3] * height),
+        ]
+        bbox_coords_list = None
+    else:
+        bbox_coords_list = sample["bbox_list"] 
+        bbox_coords = None
     # bbox_coords = bbox_coords_from_proportions(resized_width, resized_height, bbox_proportions)
 
     # Prepare system and user messages
@@ -79,8 +76,16 @@ def prepare_input(sample, processor):
         "data_source": sample["data_source"],
         "image": image,
         "query": instruction,
+        "bbox_coords_list": bbox_coords_list,
     }
 
+def is_output_inside_bbox_list(bboxes, output):
+    output_x, output_y = output
+    for bbox in bboxes:
+        bbox_x, bbox_y, bbox_width, bbox_height = bbox
+        if bbox_x <= output_x <= bbox_x + bbox_width and bbox_y <= output_y <= bbox_y + bbox_height:
+            return True
+    return False
 
 # def crop_from_results(image, pred_coord, bbox_proportions, processor):
 # resized_height, resized_width = smart_resize(
@@ -134,12 +139,20 @@ def prepare_input(sample, processor):
 def inference():
     max_new_tokens = 32
     # dataset_name = "UI-Vision"
-    dataset_name = "OSWorld-G_refined"
+    # dataset_name = "OSWorld-G_refined"
+    dataset_name = "Multimodal-Mind2Web"
+
 
     exp_name = "GTA1-7B"
 
     model_path = "/mnt/ceph_rbd/models/GTA1-7B"
     batch_size = 128
+
+    output_dir = Path("./outputs") / dataset_name / exp_name
+    os.makedirs(output_dir, exist_ok=True)
+    save_file = "predictions.jsonl"
+    
+    assert not (output_dir / save_file).exists(), "Output file already exists!"
 
     model = LLM(
         model=model_path,
@@ -165,10 +178,6 @@ def inference():
     predictions = []
     correctness = []
 
-    output_dir = Path("./outputs") / dataset_name / exp_name
-    os.makedirs(output_dir, exist_ok=True)
-    save_file = "predictions.jsonl"
-
     while True:
         while len(batch) < batch_size:
             sample = next(dataset, None)
@@ -186,7 +195,14 @@ def inference():
         llm_responses = [cur_output.outputs[0].text for cur_output in outputs]
 
         cur_preds = [extract_coordinates(t) for t in llm_responses]
-        cur_correct = [is_within_bbox(c[0], c[1], bcs) for c, bcs in zip(cur_preds, batch_target)]
+        if batch_target[0] is None:
+            batch_target_list  = [item["bbox_coords_list"] for item in batch]
+            cur_correct = []
+            for c, bcs in zip(cur_preds, batch_target_list):
+                is_correct = is_output_inside_bbox_list(bcs, c)
+                cur_correct.append(is_correct)
+        else:
+            cur_correct = [is_within_bbox(c[0], c[1], bcs) for c, bcs in zip(cur_preds, batch_target)]
         correctness.extend(cur_correct)
         predictions.extend(cur_preds)
 

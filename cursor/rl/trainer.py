@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pprint import pprint
 from typing import Optional
 
-from more_itertools import interleave
+# from more_itertools import interleave
 import numpy as np
 import ray
 import torch
@@ -1074,7 +1074,6 @@ class CursorRayPPOTrainer:
             # filtering logic start -- todo implement in a function
             key_for_filtering = "success"
             assert key_for_filtering in gen_batch_output.meta_info["reward_extra_keys"]
-            # key = success
             scores_for_filtering = gen_batch_output.non_tensor_batch[key_for_filtering]
             num_trajs = self.config.actor_rollout_ref.rollout.n
             scores_for_filtering = np.array(scores_for_filtering).reshape(-1, num_trajs)  # (batch_size, n)
@@ -1088,9 +1087,6 @@ class CursorRayPPOTrainer:
 
             # expand keep_mask to num_trajs
             keep_mask_expanded = np.repeat(keep_mask, num_trajs)
-            print(
-                f"trial {try_to_make_a_batch_times}: filter out {np.sum(~keep_mask)} samples from {len(keep_mask)} samples"
-            )
 
             if np.sum(~keep_mask) > 0:
                 if filtered_out_batch is None:
@@ -1120,6 +1116,17 @@ class CursorRayPPOTrainer:
 
             if cur_selected_num_samples >= self.config.data.train_batch_size:
                 break
+
+            # we don't need to keep all filtered samples if we already have enough samples
+            if (
+                filtered_out_batch is not None
+                and (cur_selected_num_samples + cur_filtered_num_samples) >= self.config.data.train_batch_size
+            ):
+                # truncate filtered_out_batch to save memory
+                need_num_samples = self.config.data.train_batch_size - cur_selected_num_samples
+                filtered_out_batch = filtered_out_batch.select_idxs(np.arange(need_num_samples * num_trajs))
+                filtered_out_gen_batch = filtered_out_gen_batch.select_idxs(np.arange(need_num_samples))
+
 
         batch_num_samples = 0 if final_batch is None else len(final_batch) // num_trajs
         filtered_num_samples = 0 if filtered_out_batch is None else len(filtered_out_batch) // num_trajs
@@ -1154,9 +1161,9 @@ class CursorRayPPOTrainer:
 
         if filtered_out_gen_batch is not None:
             # batch.non_tensor_batch.pop("state")
-            imgs_to_close = filtered_out_gen_batch.non_tensor_batch.pop("image")
-            for img in imgs_to_close:
-                img.close()
+            # imgs_to_close = filtered_out_gen_batch.non_tensor_batch.pop("image")
+            # for img in imgs_to_close:
+            #     img.close()
             del filtered_out_batch, filtered_out_gen_batch
 
         self.async_rollout_manager.outside_sleep()
@@ -1386,9 +1393,9 @@ class CursorRayPPOTrainer:
                 # for img in imgs_to_close:
                 #     img.close()
                 # recompute old_log_probs
-                imgs_to_close = batch.non_tensor_batch.pop("image")
-                for img in imgs_to_close:
-                    img.close()
+                # imgs_to_close = batch.non_tensor_batch.pop("image")
+                # for img in imgs_to_close:
+                #     img.close()
                 with marked_timer("old_log_prob", timing_raw, color="blue"):
                     old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
                     entropys = old_log_prob.batch["entropys"]

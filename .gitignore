@@ -8,6 +8,9 @@ checkpoints/
 logs/
 validation_outputs/
 wandb/
+traj_check/
+server/log/
+debug/
 tmp.py
 tmp.jsonl
 tmp.json

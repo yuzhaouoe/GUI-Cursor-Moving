@@ -10,6 +10,7 @@ vllm is more stable all the time
 """
 
 import re
+from shutil import move
 import vllm
 import os
 import time
@@ -149,10 +150,10 @@ class AsyncVLLMCursorMove(CursorMoveBase):
         #     return AsyncMPClient(*client_args)
         self.async_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
-        self.processor = AutoProcessor.from_pretrained(model_path)
+        self.processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
 
         logit_bias: dict = get_logit_bias(self.processor)
-        self.sampling_params = SamplingParams(**{"temperature": 0.0, "max_tokens": 512, "logit_bias": logit_bias})
+        self.sampling_params = SamplingParams(**{"temperature": 0.0, "max_tokens": 256, "logit_bias": logit_bias})
 
     async def async_predict_single(self, state: State) -> dict:
         """Async prediction for a single state"""
@@ -178,19 +179,19 @@ class AsyncVLLMCursorMove(CursorMoveBase):
             "message_inputs": input_data["message_inputs"],
         }
 
-    async def async_batch_predict(self, states: List[State]) -> dict:
-        """Async batch prediction for multiple states concurrently"""
-        tasks = [self.async_predict_single(state) for state in states]
-        results = await asyncio.gather(*tasks)
+    # async def async_batch_predict(self, states: List[State]) -> dict:
+    #     """Async batch prediction for multiple states concurrently"""
+    #     tasks = [self.async_predict_single(state) for state in states]
+    #     results = await asyncio.gather(*tasks)
 
-        return {
-            "batch_responses": [r["response"] for r in results],
-            "batch_item_idx": [r["item_idx"] for r in results],
-            "batch_observation": [r["observation"] for r in results],
-            "batch_text_input": [r["text_input"] for r in results],
-            "batch_inputs": [r["inputs"] for r in results],
-            "batch_message_inputs": [r["message_inputs"] for r in results],
-        }
+    #     return {
+    #         "batch_responses": [r["response"] for r in results],
+    #         "batch_item_idx": [r["item_idx"] for r in results],
+    #         "batch_observation": [r["observation"] for r in results],
+    #         "batch_text_input": [r["text_input"] for r in results],
+    #         "batch_inputs": [r["inputs"] for r in results],
+    #         "batch_message_inputs": [r["message_inputs"] for r in results],
+    #     }
 
 
 class VLLMCursorMove(CursorMoveBase):
@@ -215,7 +216,6 @@ class VLLMCursorMove(CursorMoveBase):
         batch_inputs = [observe_get_message_input(self.processor, state) for state in states]
         vllm_inputs = [item["inputs"] for item in batch_inputs]
         vllm_batch_responses = self.model.generate(vllm_inputs, sampling_params=self.sampling_params)
-        breakpoint()
         batch_responses = [output.outputs[0].text for output in vllm_batch_responses]
         return {
             "batch_responses": batch_responses,
@@ -279,6 +279,8 @@ def init_environment_and_state(
     global_steps=0,
     init_position=None,
     focus_type=None,
+    move_until_max_steps=False,
+    base_model_name="qwen2_5"
 ) -> State:
     if cursor_image is None:
         cursor_image = Image.open("cursor/resources/cursor-icon-cropped.png").convert("RGBA")
@@ -309,6 +311,8 @@ def init_environment_and_state(
         cursor_focus_sizes=cursor_focus_sizes,
         cursor_center_crop_size=cursor_center_crop_size,
         focus_type=focus_type,
+        move_until_max_steps=move_until_max_steps,
+        base_model_name=base_model_name,
     )
     state = State(
         environment,
@@ -333,6 +337,10 @@ def get_args():
     parser.add_argument("--dataset_name", type=str, default="ScreenSpot-v2")
     parser.add_argument("--disable_ccf", action="store_true")
     parser.add_argument("--max_steps", type=int, default=4)
+    parser.add_argument("--max_examples", type=int, default=None)
+    parser.add_argument("--move_until_max_steps", action="store_true")
+    parser.add_argument("--base_model", type=str, choices=["qwen", "uitars"], default="qwen")
+    parser.add_argument("--cursor_focus_sizes", type=float, default=1920 * 1080)
     # parser.add_argument("--disable_mm_preprocessor_cache", action="store_true")
     return parser.parse_args()
 
@@ -341,7 +349,7 @@ async def async_cursor_trajectory(state: State, model):
     """Run a single cursor trajectory asynchronously until completion"""
     trajectory_results = []
 
-    while not state.is_finished and state.step_idx < state.environment.max_steps:
+    while state.step_idx < state.environment.max_steps:  # not state.is_finished and
         # Get prediction for current state
         result = await model.async_predict_single(state)
 
@@ -386,6 +394,9 @@ async def async_main():
         use_async = True
         disable_ccf = False
         max_steps = 4
+        max_examples = None
+        move_until_max_steps = False
+        base_model = "qwen"
     else:
         args = get_args()
         batch_size = args.batch_size
@@ -402,7 +413,11 @@ async def async_main():
         disable_ccf = args.disable_ccf
         max_steps = args.max_steps
 
-    iter_dataset = load_iterable_dataset(dataset_name)
+        max_examples = args.max_examples
+        move_until_max_steps = args.move_until_max_steps
+        base_model = args.base_model
+
+    iter_dataset = load_iterable_dataset(dataset_name, max_examples=max_examples)
 
     # Initialize async model
     if use_vllm:
@@ -411,12 +426,18 @@ async def async_main():
         model = AsyncSGLangCursorMove(model_path=model_path, tp_size=tp_size, batch_size=batch_size)
 
     # Setup prompts and functions
-    # system_prompt_format = open("cursor/prompts/system_prompt.txt", "r").read()
-    system_prompt_format = open("cursor/prompts/uitars_system_prompt.txt", "r").read()
-    first_turn_prompt_format = open("cursor/prompts/query_prompt.txt", "r").read()
-    reply_prompt_format = ""
-    action_extractor_fn = ACTION_EXTRACTOR_FN["coord_answer_tag"]
-    message_history_update_fn = MESSAGE_HISTORY_UPDATE_FN["qwen"]
+    if base_model == "qwen":
+        system_prompt_format = open("cursor/prompts/system_prompt.txt", "r").read()
+        first_turn_prompt_format = open("cursor/prompts/query_prompt.txt", "r").read()
+        reply_prompt_format = ""
+        action_extractor_fn = ACTION_EXTRACTOR_FN["coord_answer_tag"]
+        message_history_update_fn = MESSAGE_HISTORY_UPDATE_FN["qwen"]
+    elif base_model == "uitars":
+        system_prompt_format = open("cursor/prompts/uitars_no_system_prompt.txt", "r").read()
+        first_turn_prompt_format = open("cursor/prompts/uitars_query_prompt.txt", "r").read()
+        reply_prompt_format = ""
+        action_extractor_fn = ACTION_EXTRACTOR_FN["uitars_action"]
+        message_history_update_fn = MESSAGE_HISTORY_UPDATE_FN["qwen"]  # same to qwen
     output_dir = Path("outputs") / dataset_name / exp_name
 
     assert not os.path.exists(output_dir / "predictions.jsonl")
@@ -441,18 +462,26 @@ async def async_main():
             example = next(iter_dataset, None)
             if example is None:
                 break
-
-            cursor_focus_sizes = None
-            if not disable_ccf:
-                # if "data_type" in example and isinstance(example["data_type"], list):
-                #     if "Icon" in example["data_type"]:
-                #         cursor_focus_sizes = 0.5
-                # elif "data_type" in example and isinstance(example["data_type"], str):
-                #     if example["data_type"] == "icon":
-                #         cursor_focus_sizes = 0.5
-                # if cursor_focus_sizes is None:
-                #     cursor_focus_sizes = 1920 * 1080
-                cursor_focus_sizes = 0.5
+            
+            if disable_ccf:
+                cursor_focus_sizes = None
+            else:
+                
+                cursor_focus_sizes = args.cursor_focus_sizes
+                if cursor_focus_sizes > 1.0:
+                    cursor_focus_sizes = int(cursor_focus_sizes)
+                else:
+                    cursor_focus_sizes = float(cursor_focus_sizes)
+            # if not disable_ccf:
+            #     # if "data_type" in example and isinstance(example["data_type"], list):
+            #     #     if "Icon" in example["data_type"]:
+            #     #         cursor_focus_sizes = 0.5
+            #     # elif "data_type" in example and isinstance(example["data_type"], str):
+            #     #     if example["data_type"] == "icon":
+            #     #         cursor_focus_sizes = 0.5
+            #     # if cursor_focus_sizes is None:
+            #     cursor_focus_sizes = 1920 * 1080
+                # cursor_focus_sizes = 0.5
 
             state = init_environment_and_state(
                 example,
@@ -466,6 +495,7 @@ async def async_main():
                 cursor_focus_sizes=cursor_focus_sizes,
                 focus_type="within_image",
                 max_steps=max_steps,
+                move_until_max_steps=move_until_max_steps,
             )
 
             # Start async trajectory
@@ -552,7 +582,7 @@ def main():
     """Main function that dispatches to sync or async based on arguments"""
     args = get_args()
     use_async = getattr(args, "use_async", False)
-    
+
     if use_async:
         # Run async version
         asyncio.run(async_main())
@@ -643,7 +673,6 @@ def sync_main():
             observation = batch_outputs["batch_observation"][sidx]
             text_input = batch_outputs["batch_text_input"][sidx]
             output_text = batch_outputs["batch_responses"][sidx]
-
             has_stopped = cur_batch[sidx].update_state(observation, text_input, output_text)
             if has_stopped:
                 stopped_sids.append(sidx)

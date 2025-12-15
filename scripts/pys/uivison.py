@@ -18,7 +18,11 @@ def load_jsonl(path):
 
 def main():
 
-    path = "/mnt/ceph_rbd/GUI-Cursor-Moving/outputs/UI-Vision/focus05/predictions.jsonl"
+    # path = "/mnt/ceph_rbd/GUI-Cursor-Moving/outputs/UI-Vision/focus05/predictions.jsonl"
+    # path = "/mnt/ceph_rbd/GUI-Cursor-Moving/outputs/UI-Vision/GTA1-7B/predictions.jsonl"
+    # path = "/mnt/ceph_rbd/GUI-Cursor-Moving/outputs/UI-Vision/GUI-Cursor-uitars-160steps/predictions.jsonl"
+    path = "outputs/UI-Vision/uitars-from100-hint-to-move-to260steps/predictions.jsonl"
+    # path = "/mnt/ceph_rbd/GUI-Cursor-Moving/outputs/UI-Vision/GUI-Cursor-uitars-160steps_focus05/predictions.jsonl"
     data = load_jsonl(path)
     iter_data = load_iterable_dataset("UI-Vision", load_image=False)
     category_acc = defaultdict(list)
@@ -28,8 +32,8 @@ def main():
         cur_acc = pred["within_bbox_history"][-1]
         category_acc[category].append(cur_acc)
         num_items += 1
-        if num_items >= 832:
-            break
+        # if num_items >= 832:
+        #     break
 
     
     for category in category_acc.keys():

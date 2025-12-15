@@ -5,3 +5,4 @@ action_extractor_fn_name: coord_answer_tag
 message_history_update_fn_name: qwen
 cursor_image_path: cursor/resources/cursor-icon-cropped.png
 max_steps: 3
+base_model_name: qwen2_5

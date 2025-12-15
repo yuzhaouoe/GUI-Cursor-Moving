@@ -303,7 +303,7 @@ def crop_image_with_padding(image, center_x, center_y, crop_width, crop_height):
     img_width, img_height = image.size
 
     # Define the color for padding based on the image mode
-    padding_color = (255, 255, 255, 255) if image.mode == 'RGBA' else (255, 255, 255)
+    padding_color = (255, 255, 255, 255) if image.mode == "RGBA" else (255, 255, 255)
 
     # Create a new image with the specified crop size and white background
     background = Image.new(image.mode, (crop_width, crop_height), padding_color)

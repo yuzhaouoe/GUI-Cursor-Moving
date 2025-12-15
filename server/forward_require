@@ -1,0 +1,12 @@
+Pure SSH Tunnel
+You can tell SSH to listen on the Public IP and forward directly to the GPU. This is faster, supports WebSockets, and uses less CPU.
+Run this command on the Public Server:
+code
+Bash
+# -g: Allows remote hosts to connect to local forwarded ports (Gateway mode)
+# -L 54302:127.0.0.1:54302: Listen on Public:54302 -> Forward to GPU:54302
+ssh -p 41280 -g -L 54302:127.0.0.1:54302 root@localhost -N
+Note: If your SSH version is old and -g doesn't work as expected, you can specify the bind address explicitly:
+code
+Bash
+ssh -p 41280 -L 0.0.0.0:54302:127.0.0.1:54302 root@localhost -N

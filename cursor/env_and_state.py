@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(level=logging.WARNING)
 
 
-
 class Environment:
     def __init__(
         self,
@@ -55,6 +54,8 @@ class Environment:
         focus_type: Optional[str] = None,
         store_message_history: bool = True,
         store_tokenized_ids_and_mm_inputs: bool = False,
+        move_until_max_steps: bool = False,
+        base_model_name="qwen2_5",
     ):
         # if max_tokens_per_img is not None:
         if cursor_focus_sizes is not None or cursor_center_crop_size is not None:
@@ -66,11 +67,11 @@ class Environment:
         width, height = screenshot.size
 
         if bbox_proportions is not None:
-            bbox_coords = bbox_coords_from_proportions(width, height, bbox_proportions)
+            self.bbox_coords = bbox_coords_from_proportions(width, height, bbox_proportions)
 
             if add_bounding_box:
                 screenshot = add_bbox_to_screenshot(screenshot, bbox_coords)
-            target_center = (
+            self.target_center = (
                 int((bbox_proportions[0] + bbox_proportions[2]) * width / 2),
                 int((bbox_proportions[1] + bbox_proportions[3]) * height / 2),
             )
@@ -91,8 +92,6 @@ class Environment:
         self.system_prompt_format = system_prompt_format
         self.first_turn_prompt_format = first_turn_prompt_format
         self.reply_prompt_format = reply_prompt_format
-        self.bbox_coords = bbox_coords
-        self.target_center = target_center
         self.latest_screen_only = latest_screen_only
         self.max_steps = max_steps
         self.max_global_steps = max_global_steps
@@ -121,6 +120,9 @@ class Environment:
 
         self.store_message_history = store_message_history
         self.store_tokenized_ids_and_mm_inputs = store_tokenized_ids_and_mm_inputs
+
+        self.move_until_max_steps = move_until_max_steps
+        self.base_model_name = base_model_name
 
     def __repr__(self):
         return f"Environment(name={self.name})"
@@ -173,7 +175,7 @@ class State:
             ]
         else:
             self.message_history = None
-        
+
         self.environment: Environment = environment
         self.item_idx = environment.item_idx
         self.save_obs = save_obs
@@ -217,6 +219,10 @@ class State:
             self.tokenized_ids = None
             self.multi_modal_inputs = None
 
+        self.move_until_max_steps = self.environment.move_until_max_steps
+        self.position_history_prop_global = None
+        self.hint_to_move = False
+
     @classmethod
     def from_state(cls, state: "State"):
         """
@@ -251,7 +257,8 @@ class State:
     def _extract_action_and_update_cursor(self, observation, text_input, output_text):
         logger.debug(f"step {self.step_idx} - llm response: {output_text}")
         extractor = self.environment.action_extractor_fn
-
+        if self.environment.base_model_name == "qwen3":
+            output_text = "<think>" + output_text
         message_history_update_fn = self.environment.message_history_update_fn
         self.message_history = message_history_update_fn(
             observation=observation,
@@ -261,6 +268,14 @@ class State:
         )
 
         action, action_x, action_y = extractor(output_text)
+
+        if self.environment.base_model_name == "qwen3":
+            # x and y are normalised from 0 to 1000
+            try:
+                action_x = int(action_x * self.environment.screenshot.size[0] / 1000)
+                action_y = int(action_y * self.environment.screenshot.size[1] / 1000)
+            except Exception as e:
+                pass
 
         if action is None:
             raise ValueError(f"step {self.step_idx} - extract action failed from: {output_text}")
@@ -431,8 +446,11 @@ class State:
         )
         self.environment = environment
         self.position_history_global = [self.position_history]
-        self.message_history_global = [
-            convert_image_to_cursor_position(self.message_history, self.position_history, release_image=False)
+        self.position_history_prop_global = [
+            [
+                (x / self.environment.screenshot.size[0], y / self.environment.screenshot.size[1])
+                for x, y in self.position_history
+            ]
         ]
         # reset to center
         # shift a distance to avoid the centered key information being obscured by the cursor
@@ -456,8 +474,11 @@ class State:
             stop_reason = "extract_action_failed"
 
         if self.is_finished:
-            assert stop_reason is None
-            stop_reason = "target_reached"
+            if self.hint_to_move and not self.is_within_bbox() and not self.max_steps_reached:
+                stop_reason = None
+            else:
+                assert stop_reason in [None, "extract_action_failed"]
+                stop_reason = "target_reached"
         elif self.max_steps_reached:
             assert stop_reason is None
             max_global_steps = self.environment.max_global_steps
@@ -477,6 +498,11 @@ class State:
         else:
             self.has_stopped = True
             self.stop_reason = stop_reason
+
+        if self.move_until_max_steps and self.step_idx < self.environment.max_steps:
+            self.has_stopped = False
+            self.stop_reason = None
+        # print(f"{self.move_until_max_steps=} {self.step_idx=} {self.has_stopped=}")
 
         return self.has_stopped
 
@@ -503,12 +529,17 @@ class State:
             "is_within_bbox": self.is_within_bbox(),
             "final_cursor_position": (self.cursor_x, self.cursor_y),
             "position_history": self.position_history,
+            "position_prop_history": [
+                (x / self.environment.screenshot.size[0], y / self.environment.screenshot.size[1])
+                for x, y in self.position_history
+            ],
             "within_bbox_history": self.within_bbox_history,
             "global_steps": self.global_steps,
             "stop_reason": self.stop_reason,
         }
         if self.position_history_global is not None:
             preds["position_history_global"] = self.position_history_global
+            preds["position_prop_history_global"] = self.position_history_prop_global
             preds["focus_left_top_history"] = self.focus_left_top_history
             preds["cursor_focus_sizes"] = self.environment.cursor_focus_sizes
 
@@ -558,9 +589,13 @@ class State:
             if not environment.ask_to_move_if_wrong:
                 text_input = None
             elif environment.ask_to_move_if_wrong and not self.is_within_bbox():
-                text_input = "The cursor is not at the target position based on the latest screenshot. Please continue to move the cursor."
+                text_input = "The cursor is not on the target. Please analyze the spatial relationship between the cursor and the target, and then move the cursor."
                 self.is_finished = False
+            elif self.hint_to_move:
+                text_input = "The cursor is not on the target. Please analyze the spatial relationship between the cursor and the target, and then move the cursor."
             else:
+                assert self.move_until_max_steps is True
+                assert self.step_idx <= environment.max_steps
                 text_input = None
         # elif state.is_finished:
         #     text_input = None
@@ -574,6 +609,7 @@ class State:
                 self.cursor_x >= self.environment.max_x_pos,
                 self.cursor_y >= self.environment.max_y_pos,
             )
+            text_input = ""
             if at_right and at_bottom:
                 text_input += "\n\nThe cursor is at the bottom-right corner, which may not be visible."
             elif at_right:
@@ -758,7 +794,7 @@ def convert_image_to_cursor_position(message_history, position_history, release_
                     assert len(keys) == 1
                     image_key = keys[0]
                     # Collect PIL image for cleanup if release_image is True
-                    if release_image and hasattr(cur_content[image_key], 'close'):
+                    if release_image and hasattr(cur_content[image_key], "close"):
                         images_to_close.append(cur_content[image_key])
                     cursor_position = position_history[image_idx]
                     cur_content[image_key] = cursor_position
@@ -771,13 +807,13 @@ def convert_image_to_cursor_position(message_history, position_history, release_
                 assert len(keys) == 1
                 image_key = keys[0]
                 # Collect PIL image for cleanup if release_image is True
-                if release_image and hasattr(msg["content"][image_key], 'close'):
+                if release_image and hasattr(msg["content"][image_key], "close"):
                     images_to_close.append(msg["content"][image_key])
                 msg["content"][image_key] = cursor_position
                 image_idx += 1
         else:
             assert isinstance(content, str)
-    
+
     # Close all PIL images to release memory
     if release_image:
         for img in images_to_close:
@@ -785,7 +821,7 @@ def convert_image_to_cursor_position(message_history, position_history, release_
                 img.close()
             except:
                 pass
-    
+
     # assert image_idx == len(position_history)
     return message_history
 

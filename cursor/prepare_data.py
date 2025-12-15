@@ -14,10 +14,10 @@ from pathlib import Path
 from PIL import ImageDraw
 
 
-def load_iterable_dataset(dataset_name: str, load_image=True):
+def load_iterable_dataset(dataset_name: str, load_image=True, max_examples=None, data_source=None):
 
     if dataset_name == "ScreenSpot-v2":
-        dataset = load_screenspot_v2()
+        dataset = load_screenspot_v2(load_image=load_image)
     elif dataset_name == "OSWorld-G":
         dataset = load_osworld_g(refined=False, load_image=load_image)
     elif dataset_name == "OSWorld-G_refined":
@@ -27,9 +27,24 @@ def load_iterable_dataset(dataset_name: str, load_image=True):
     elif dataset_name.startswith("grounding_train"):
         dataset = load_train_data(dataset_name)
     elif dataset_name == "ScreenSpot-Pro":
-        dataset = load_screenspot_pro()
+        dataset = load_screenspot_pro(load_image=load_image)
+    elif dataset_name == "Multimodal-Mind2Web":
+        dataset = load_multimodal_mind2web_uground_plan(load_image=load_image)
     else:
         raise ValueError(f"Dataset {dataset_name} not supported.")
+
+    if max_examples is not None:
+
+        def wrap_iterable_with_limit():
+            count = 0
+            for item in dataset:
+                if count >= max_examples:
+                    break
+                yield item
+                count += 1
+
+        return wrap_iterable_with_limit()
+
     return dataset
 
 
@@ -48,7 +63,8 @@ def load_train_data(dataset_name, load_image=False):
             "query": query,
         }
 
-def load_screenspot_pro():
+
+def load_screenspot_pro(load_image=True):
     files = [
         "vscode_macos.json",
         "pycharm_macos.json",
@@ -87,12 +103,17 @@ def load_screenspot_pro():
 
     def iter_data():
         for item_idx, item in enumerate(examples):
-            image = Image.open(image_dir / item["img_filename"]).convert("RGB")
             xmin, ymin, xmax, ymax = item["bbox"]
-            width, height = item["img_size"]
-            # bbox_proportions = [xmin / width, xmax / width, ymin / height, ymax / height]
-            bbox_proportions = [xmin / width, ymin / height, xmax / width, ymax / height]
-            bbox_coords = [xmin, ymin, xmax, ymax]
+            if load_image:
+                image = Image.open(image_dir / item["img_filename"]).convert("RGB")
+                width, height = item["img_size"]
+                # bbox_proportions = [xmin / width, xmax / width, ymin / height, ymax / height]
+                bbox_proportions = [xmin / width, ymin / height, xmax / width, ymax / height]
+                bbox_coords = [xmin, ymin, xmax, ymax]
+            else:
+                image = None
+                bbox_proportions = None
+                bbox_coords = None
             yield {
                 "item_idx": item_idx,
                 "bbox_coords": bbox_coords,
@@ -103,7 +124,52 @@ def load_screenspot_pro():
                 "img_filename": item["img_filename"],
                 "image": image,
             }
+
     return iter_data()
+
+
+def load_multimodal_mind2web_uground_plan(load_image=True, select_data_source=None):
+    data_sources = ["website", "task", "domain"]
+    question_files = [
+        f"/mnt/ceph_rbd/UGround/offline_evaluation/Multimodal-Mind2Web/data/gpt-4o_results/cross_{data_source}_query.jsonl"
+        for data_source in data_sources
+    ]
+    image_folders = [
+        f"/mnt/ceph_rbd/data/UGround-Offline-Evaluation/release_images/cross_{data_source}"
+        for data_source in data_sources
+    ]
+    image_key = "image"
+
+    item_idx = 0
+    for idx in range(len(data_sources)):
+        data_source = data_sources[idx]
+        question_file = question_files[idx]
+        image_folder = image_folders[idx]
+        questions = [json.loads(line) for line in open(question_file, "r")]
+        for item in questions:
+            if select_data_source is not None and data_source != select_data_source:
+                item_idx += 1
+                continue
+            else:
+                image_base_dir = os.path.expanduser(image_folder)
+                image_path = os.path.join(image_base_dir, item[image_key])
+                if load_image:
+                    image = Image.open(image_path).convert("RGB")
+                else:
+                    image = None
+                query = item["description"]
+
+                yield {
+                    "item_idx": f"{data_source}-yuzhaouoe-{item['id']}",
+                    "image": image,
+                    "query": query,
+                    "bbox_coords": None,
+                    "bbox_proportions": None,
+                    "data_source": data_source,
+                    "img_filename": image_path,
+                    "bbox_list": item["bbox"],
+                }
+                item_idx += 1
 
 
 def load_ui_vision(load_image=True):
@@ -123,7 +189,7 @@ def load_ui_vision(load_image=True):
         for item in data:
             item["data_source"] = data_type
         all_data.extend(data)
-    
+
     def iter_data():
         image_dir = image_path = DATA_DIR / "UI-Vision" / "images"
         for item_idx, item in enumerate(all_data):
@@ -138,7 +204,7 @@ def load_ui_vision(load_image=True):
                     bbox_coords[2] / image.width,
                     bbox_coords[3] / image.height,
                 ]
-            else: 
+            else:
                 image = None
                 bbox_proportions = None
 
@@ -215,7 +281,7 @@ def load_osworld_g(refined, load_image=True):
     return iter_data()
 
 
-def load_screenspot_v2():
+def load_screenspot_v2(load_image=False):
     if not (DATA_DIR / "ScreenSpot-v2").exists():
         hf_path = "OS-Copilot/ScreenSpot-v2"
         snapshot_download(repo_id=hf_path, repo_type="dataset", local_dir=DATA_DIR / "ScreenSpot-v2")
@@ -232,15 +298,19 @@ def load_screenspot_v2():
     def iter_data():
         for item_idx, item in enumerate(data):
             image_path: Path = image_dir / item["img_filename"]
-            image = Image.open(image_path).convert("RGB")
             bbox = item["bbox"]
             bbox_coords = [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]
-            bbox_proportions = [
-                bbox_coords[0] / image.width,
-                bbox_coords[1] / image.height,
-                bbox_coords[2] / image.width,
-                bbox_coords[3] / image.height,
-            ]
+            if load_image:
+                image = Image.open(image_path).convert("RGB")
+                bbox_proportions = [
+                    bbox_coords[0] / image.width,
+                    bbox_coords[1] / image.height,
+                    bbox_coords[2] / image.width,
+                    bbox_coords[3] / image.height,
+                ]
+            else:
+                image = None
+                bbox_proportions = None
             yield {
                 "item_idx": item_idx,
                 "bbox_coords": bbox_coords,
@@ -288,8 +358,8 @@ def prepare_verl_parquet_data_files(dataset_name, max_samples=None):
             # "image_height": item["image"].height,
         }
         #             "bbox_coords": item["bbox_coords"],
-            # "data_type": item["data_type"],
-            # "data_source": item["data_source"],
+        # "data_type": item["data_type"],
+        # "data_source": item["data_source"],
         if "bbox_coords" in item:
             data_dict["bbox_coords"] = item["bbox_coords"]
         if "data_type" in item:
@@ -316,7 +386,7 @@ def load_parquet_with_images(parquet_path: str, image_dir: str):
     dataset = Dataset.from_parquet(str(parquet_path))
     for idx, item in enumerate(dataset):
         if ".zip" in str(image_dir):
-            with zipfile.ZipFile(image_dir, 'r') as zip_ref:
+            with zipfile.ZipFile(image_dir, "r") as zip_ref:
                 with zip_ref.open(os.path.join("image", item["img_filename"])) as image_file:
                     image = Image.open(image_file).convert("RGB")
         else:
@@ -349,7 +419,9 @@ def main():
     print(f"Arguments: dataset_name={args.dataset_name}, max_samples={args.max_samples}")
 
     # Test the parquet preparation function
-    print(f"Preparing {args.dataset_name} parquet file {f'({args.max_samples} samples)' if args.max_samples else '(full)'}")
+    print(
+        f"Preparing {args.dataset_name} parquet file {f'({args.max_samples} samples)' if args.max_samples else '(full)'}"
+    )
     ret_parquet_path = prepare_verl_parquet_data_files(args.dataset_name, max_samples=args.max_samples)
 
     # if args.max_samples:
@@ -375,8 +447,12 @@ def main():
         if item.get("bbox_coords", None) is None:
             width, height = image.width, image.height
             bbox_proportions = item["bbox_proportions"]
-            bbox_coords = [bbox_proportions[0] * width, bbox_proportions[1] * height,
-                           bbox_proportions[2] * width, bbox_proportions[3] * height]
+            bbox_coords = [
+                bbox_proportions[0] * width,
+                bbox_proportions[1] * height,
+                bbox_proportions[2] * width,
+                bbox_proportions[3] * height,
+            ]
         else:
             bbox_coords = item["bbox_coords"]
         draw = ImageDraw.Draw(image)

@@ -107,7 +107,8 @@ class CursorStateDataset(Dataset):
             self.image_dir = Path("/mnt/ceph_rbd/data/ScreenSpot-v2/screenspotv2_image")
         elif "grounding_train" in file_name_split[-1]:
             self.dataset_name = "grounding_train"
-            self.image_dir = "/mnt/ceph_rbd/data/grounding_data/image.zip"
+            # self.image_dir = "/mnt/ceph_rbd/data/grounding_data/image.zip"
+            self.image_dir = Path("/mnt/ceph_rbd/data/unzip_images")
         else:
             raise NotImplementedError(f"dataset_name not detected from {data_files[0]}")
 
@@ -241,32 +242,33 @@ class CursorStateDataset(Dataset):
     def __getitem__(self, item):
         row_dict: dict = self.dataframe[item]
         img_filename = row_dict["img_filename"]
+        image_path = self.image_dir / img_filename
         tensor_item_idx = torch.tensor(row_dict["item_idx"], dtype=torch.long)
-        if ".zip" in str(self.image_dir):
-            with zipfile.ZipFile(self.image_dir, 'r') as zip_ref:
-                with zip_ref.open(os.path.join("image", img_filename)) as image_file:
-                    image = Image.open(image_file).convert("RGB")
-        else:
-            image_path = self.image_dir / img_filename
-            image = Image.open(image_path).convert("RGB")
+        # if ".zip" in str(self.image_dir):
+        #     with zipfile.ZipFile(self.image_dir, 'r') as zip_ref:
+        #         with zip_ref.open(os.path.join("image", img_filename)) as image_file:
+        #             image = Image.open(image_file).convert("RGB")
+        # else:
+        #     image_path = self.image_dir / img_filename
+        #     image = Image.open(image_path).convert("RGB")
 
-        min_tokens_per_img = 512
-        max_tokens_per_img = 2691 # 2645 # 2691  # (1092 // 28) * (1932 // 28)
-        width, height = image.size
-        resized_height, resized_width = smart_resize(
-            height,
-            width,
-            factor=28,
-            min_pixels=min_tokens_per_img * 28 * 28 if min_tokens_per_img else 0,
-            max_pixels=max_tokens_per_img * 28 * 28 if max_tokens_per_img else 16384 * 28 * 28,
-        )
-        image = image.resize((resized_width, resized_height))
+        # min_tokens_per_img = 512
+        # max_tokens_per_img = 2691 # 2645 # 2691  # (1092 // 28) * (1932 // 28)
+        # width, height = image.size
+        # resized_height, resized_width = smart_resize(
+        #     height,
+        #     width,
+        #     factor=28,
+        #     min_pixels=min_tokens_per_img * 28 * 28 if min_tokens_per_img else 0,
+        #     max_pixels=max_tokens_per_img * 28 * 28 if max_tokens_per_img else 16384 * 28 * 28,
+        # )
+        # image = image.resize((resized_width, resized_height))
 
         return_dict = {
             "item_idx": tensor_item_idx,  # we must have a tensor style value to return
             "uid": row_dict["item_idx"],
-            "image": image,
-            # "image_path": image_path,
+            # "image": image,
+            "image_path": image_path,
             "query": row_dict["query"],
             "bbox_proportions": row_dict["bbox_proportions"],
         }

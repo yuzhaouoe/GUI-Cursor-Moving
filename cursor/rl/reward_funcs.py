@@ -29,7 +29,7 @@ def get_uitars_think_answer_format_reward(state: State) -> float:
     history_responses = responses[:-1]
     last_responses = responses[-1]
 
-    pattern = r"Thought:.*?Action:\s*GOTO\(\s*\d+\s*,\s*\d+\s*\)"
+    pattern = r"Thought:.*?Action:\s*(GOTO\(\s*\d+\s*,\s*\d+\s*\)|STOP)" # r"Thought:.*?Action:\s*GOTO\(\s*\d+\s*,\s*\d+\s*\)"
     matches = [re.fullmatch(pattern, content.strip(), re.DOTALL) for content in history_responses]
     reward = [1.0 if match else 0.0 for match in matches]
 

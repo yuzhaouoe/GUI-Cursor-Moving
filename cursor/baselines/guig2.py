@@ -22,7 +22,19 @@ def prepare_input(sample, processor):
     bbox_proportions = sample["bbox_proportions"]
     bbox_coords = sample["bbox_coords"]
     # width, height = image.width, image.height
+    width, height = image.width, image.height
 
+    if bbox_proportions is not None:
+        bbox_coords = [
+            int(bbox_proportions[0] * width),
+            int(bbox_proportions[1] * height),
+            int(bbox_proportions[2] * width),
+            int(bbox_proportions[3] * height),
+        ]
+        bbox_coords_list = None
+    else:
+        bbox_coords_list = sample["bbox_list"] 
+        bbox_coords = None
     # resized_height, resized_width = smart_resize(
     #     image.height,
     #     image.width,
@@ -65,9 +77,16 @@ def prepare_input(sample, processor):
         "data_source": sample["data_source"],
         "image": image,
         "query": instruction,
+        "bbox_coords_list": bbox_coords_list,
     }
 
-
+def is_output_inside_bbox_list(bboxes, output):
+    output_x, output_y = output
+    for bbox in bboxes:
+        bbox_x, bbox_y, bbox_width, bbox_height = bbox
+        if bbox_x <= output_x <= bbox_x + bbox_width and bbox_y <= output_y <= bbox_y + bbox_height:
+            return True
+    return False
 # def load_model():
 #     model_path = download_to_temp_dir("/mnt/yuzhao/tmp_model_dir", "hf/inclusionAI/GUI-G2-7B")
 
@@ -160,7 +179,9 @@ def main():
     # model_path = download_to_temp_dir("/mnt/yuzhao/tmp_model_dir", "hf/inclusionAI/GUI-G2-7B")
     # dataset_name = "UI-Vision"
     # dataset_name = "OSWorld-G_refined"
-    dataset_name = "UI-Vision"
+    # dataset_name = "UI-Vision"
+    dataset_name = "Multimodal-Mind2Web"
+
     model_path = "/mnt/ceph_rbd/models/GUI-G2-7B"
     exp_name = "GUI-G2-7B"
     batch_size = 128
@@ -189,7 +210,7 @@ def main():
 
     output_dir = Path("./outputs") / dataset_name / exp_name
     os.makedirs(output_dir, exist_ok=True)
-    save_file = "predictions.json"
+    save_file = "predictions.jsonl"
 
     while True:
         while len(batch) < batch_size:
@@ -208,7 +229,14 @@ def main():
         llm_responses = [cur_output.outputs[0].text for cur_output in outputs]
 
         cur_preds = [extract_coordinates(t) for t in llm_responses]
-        cur_correct = [is_within_bbox(c[0], c[1], bcs) for c, bcs in zip(cur_preds, batch_target)]
+        if batch_target[0] is None:
+            batch_target_list  = [item["bbox_coords_list"] for item in batch]
+            cur_correct = []
+            for c, bcs in zip(cur_preds, batch_target_list):
+                is_correct = is_output_inside_bbox_list(bcs, c)
+                cur_correct.append(is_correct)
+        else:
+            cur_correct = [is_within_bbox(c[0], c[1], bcs) for c, bcs in zip(cur_preds, batch_target)]
         correctness.extend(cur_correct)
         predictions.extend(cur_preds)
 
