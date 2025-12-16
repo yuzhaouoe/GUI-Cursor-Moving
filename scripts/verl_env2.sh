@@ -9,6 +9,7 @@ pip install -e .
 pip install -e ./verl
 pip install transformers==4.57.3
 pip install flask
+pip install 'nixl[cu12]'
 
 cat >> ~/.bashrc << 'EOF'
 

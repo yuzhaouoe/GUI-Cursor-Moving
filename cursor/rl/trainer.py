@@ -346,6 +346,8 @@ class CursorRayPPOTrainer:
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
+        self.stop_iteration_times = 0
+
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
         Creates the train and validation dataloaders.
@@ -837,6 +839,13 @@ class CursorRayPPOTrainer:
             self.async_rollout_manager = CursorAgentLoopManager(
                 config=self.config, worker_group=self.actor_rollout_wg, rm_wg=self.rm_wg
             )
+        # rollout actor
+        breakpoint()
+
+        from ray.experimental.collective import create_collective_group
+
+        # actor list: self.async_rollout_manager.agent_loop_workers
+
 
     def _save_checkpoint(self):
         from verl.utils.fs import local_mkdir_safe
@@ -1038,6 +1047,8 @@ class CursorRayPPOTrainer:
             try:
                 batch_dict = next(self.data_iterator)
             except StopIteration:
+                self.stop_iteration_times += 1
+                print(f"Reaching end of dataloader times {self.stop_iteration_times}, restarting from beginning.")
                 self.data_iterator = iter(self.train_dataloader)
                 batch_dict = next(self.data_iterator)
 
@@ -1147,7 +1158,7 @@ class CursorRayPPOTrainer:
                 final_batch = filtered_out_batch.select_idxs(np.arange(need_num_samples * num_trajs))
                 selected_gen_batch = filtered_out_gen_batch.select_idxs(np.arange(need_num_samples))
         elif batch_num_samples > self.config.data.train_batch_size:
-            print(f"more than target size {self.config.data.train_batch_size}, truncate to get the final batch")
+            print(f"{batch_num_samples} more than target size {self.config.data.train_batch_size}, truncate to get the final batch")
             final_batch = final_batch.select_idxs(np.arange(self.config.data.train_batch_size * num_trajs))
             selected_gen_batch = selected_gen_batch.select_idxs(np.arange(self.config.data.train_batch_size))
         else:

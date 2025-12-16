@@ -74,6 +74,8 @@ def process_multi_modal_sample(idx, input_ids, images, tokenizer, processor):
 
 
 def process_dataproto_multi_modal_inputs(output: DataProto, tokenizer, processor):
+    if output.non_tensor_batch.get("multi_modal_data", None) is None:
+        return
     multi_modal_data = output.non_tensor_batch["multi_modal_data"]
     batch_size = len(output)
 
@@ -492,29 +494,12 @@ class CursorLoopWorker(AgentLoopWorkerBase):
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
 
-
-        # start_gather_time = time.perf_counter()
         outputs = await asyncio.gather(*tasks)
-        # end_gather_time = time.perf_counter()
-        # print(f"[CursorAgentLoopManager] ray.gather time: {end_gather_time - start_gather_time:.2f}s")
 
         if batch.meta_info.get("validate", False):
             output = self._val_postprocess(outputs)
         else:
             output = self._postprocess(outputs)
-        # convert to dict
-        # batch, non_tensor_batch, meta_info = output.model_dump().values()
-        # breakpoint()
-
-        # to dict
-        # batch_output = {
-        #     f"$batch${k}": v for k, v in output.batch.items()
-        # }
-        # non_tensor_batch_output = {
-        #     f"$non_tensor_batch${k}": v for k, v in output.non_tensor_batch.items()
-        # }
-        # output.non_tensor_batch["multi_modal_inputs"] = None
-
         return output
 
     def _postprocess(self, inputs: list[_InternalAgentLoopOutput]) -> DataProto:
@@ -878,6 +863,7 @@ class CursorAgentLoopManager(AgentLoopManager):
             cur_outputs = worker_outputs[0]
 
             # Process multi-modal inputs using ThreadPoolExecutor in background
+            # 1. submit
             future = processing_executor.submit(
                 process_dataproto_multi_modal_inputs,
                 cur_outputs, 
@@ -885,31 +871,86 @@ class CursorAgentLoopManager(AgentLoopManager):
                 self.processor
             )
             processing_futures.append((original_idx, cur_outputs, future))
+            
 
-            # print(
-            #     f"[CursorAgentLoopManager] ray.wait one worker time: {time.perf_counter() - get_time:.2f}s, worker index: {original_idx}"
-            # )
-
-        # print(f"[CursorAgentLoopManager] Waiting for {len(processing_futures)} processing tasks to complete...")
-
-        process_start_time = time.perf_counter()
-        # Wait for all futures to complete
+        # 2. wait process
         wait([future for _, _, future in processing_futures])
-        
-        # process_end_time = time.perf_counter()
-        # print(f"[CursorAgentLoopManager] All processing tasks completed in {process_end_time - process_start_time:.2f}s")
-        
-        # Store outputs in correct order (futures are already done)
+
+        # 3. collect results
         for original_idx, cur_outputs, future in processing_futures:
             future.result()  # Ensure no exceptions, output already modified in-place
             outputs[original_idx] = cur_outputs
 
-        processing_executor.shutdown(wait=True)
+        # processing_executor.shutdown(wait=True)
 
-        end_get_time = time.perf_counter()
+        output = DataProto.concat(outputs)
 
-        # print(f"[CursorAgentLoopManager] Total ray.get + processing time: {end_get_time - start_get_time:.2f}s")
+        # if self.config.actor_rollout_ref.rollout.free_cache_engine:
+        #     self.sleep()
+        # if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
+        #     self.reward_model_manager.sleep()
+
+        # calculate performance metrics
+        metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
+        timing = self._performance_metrics(metrics, output)
+
+        output.meta_info = {"timing": timing, **outputs[0].meta_info}
+
+        del outputs, metrics, chunkes
+
+        return output
+
+    def generate_sequences_direct_transport(self, prompts: DataProto) -> DataProto:
+        """Split input batch and dispatch to agent loop workers.
+
+        Args:
+            prompts (DataProto): Input batch.
+
+        Returns:
+            DataProto: Output batch.
+        """
+
+        # if self.config.actor_rollout_ref.rollout.free_cache_engine:
+        #     self.wake_up()
+        # if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
+        #     self.reward_model_manager.wake_up()
+
+        chunkes = prompts.chunk(len(self.agent_loop_workers))
+
+        start_get_time = time.perf_counter()
+
+        outputs = [None] * len(self.agent_loop_workers)  # Pre-allocate with correct size
+        workers_outputs_refs = [
+            worker.generate_sequences.remote(chunk)
+            for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
+        ]
+
+        # Create mapping from ref to original index
+        ref_to_index = {ref: idx for idx, ref in enumerate(workers_outputs_refs)}
+
+        # get_time = time.perf_counter()
+        processing_futures = []
+        processing_executor = ThreadPoolExecutor(max_workers=len(self.agent_loop_workers))
         
+        while workers_outputs_refs:
+            ready_object_refs, workers_outputs_refs = ray.wait(workers_outputs_refs, num_returns=1)
+            worker_outputs: List[DataProto] = ray.get(ready_object_refs)
+            original_idx = ref_to_index[ready_object_refs[0]]
+            cur_outputs = worker_outputs[0]
+            outputs[original_idx] = cur_outputs
+        
+        process_dataproto_multi_modal_inputs(outputs)
+
+        # 2. wait process
+        # wait([future for _, _, future in processing_futures])
+
+        # 3. collect results
+        # for original_idx, cur_outputs, future in processing_futures:
+        #     future.result()  # Ensure no exceptions, output already modified in-place
+        #     outputs[original_idx] = cur_outputs
+
+        # processing_executor.shutdown(wait=True)
+
         output = DataProto.concat(outputs)
 
         # if self.config.actor_rollout_ref.rollout.free_cache_engine:

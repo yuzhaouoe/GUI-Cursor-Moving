@@ -7,13 +7,13 @@ export VLLM_USE_V1=1
 # export YUZHAO_DEBUG=1
 
 MAX_TURNS=4
-TRAIN_BATCH_SIZE=32
-ROLLOUT_N=16
-AGENT_NUM_WORKERS=16
+TRAIN_BATCH_SIZE=8
+ROLLOUT_N=4
+AGENT_NUM_WORKERS=1
 # PPO_MINI_BATCH_SIZE=$((TRAIN_BATCH_SIZE * ROLLOUT_N))
 # ACTOR_DTYPE=bfloat16
 ACTOR_DTYPE=fp32
-EXP_NAME=qwen3-bs32n16-speedup # qwen3-bs32n16-from100 # debug # bs32n12
+EXP_NAME=debug # qwen3-bs32n16-speedup # qwen3-bs32n16-from100 # debug # bs32n12
 PROJECT_NAME=GUI-Cursor
 DATALOADER_NUM_WORKERS=4
 #  py-spy record -r 10 -o profile.svg --
@@ -44,7 +44,7 @@ PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
  actor_rollout_ref.actor.use_kl_loss=false \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_BATCH_SIZE \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
  actor_rollout_ref.rollout.mode=async \
  actor_rollout_ref.rollout.max_model_len=32768 \
  actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
