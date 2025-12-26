@@ -272,6 +272,7 @@ class State:
         if self.environment.base_model_name == "qwen3":
             # x and y are normalised from 0 to 1000
             try:
+                # convert to pixel coordinates
                 action_x = int(action_x * self.environment.screenshot.size[0] / 1000)
                 action_y = int(action_y * self.environment.screenshot.size[1] / 1000)
             except Exception as e:
@@ -443,6 +444,7 @@ class State:
             message_history_update_fn=self.environment.message_history_update_fn,
             max_global_steps=self.environment.max_global_steps,
             cursor_focus_sizes=None,
+            base_model_name=self.environment.base_model_name,
         )
         self.environment = environment
         self.position_history_global = [self.position_history]

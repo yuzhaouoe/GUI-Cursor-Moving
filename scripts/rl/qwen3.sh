@@ -7,15 +7,18 @@ export VLLM_USE_V1=1
 # export YUZHAO_DEBUG=1
 
 MAX_TURNS=4
-TRAIN_BATCH_SIZE=8
-ROLLOUT_N=4
-AGENT_NUM_WORKERS=1
+TRAIN_BATCH_SIZE=32
+ROLLOUT_N=16
+AGENT_NUM_WORKERS=8
 # PPO_MINI_BATCH_SIZE=$((TRAIN_BATCH_SIZE * ROLLOUT_N))
 # ACTOR_DTYPE=bfloat16
 ACTOR_DTYPE=fp32
-EXP_NAME=debug # qwen3-bs32n16-speedup # qwen3-bs32n16-from100 # debug # bs32n12
+EXP_NAME=qwen3-bs32n16-1210-1step # qwen3-bs32n16-speedup # qwen3-bs32n16-from100 # debug # bs32n12
 PROJECT_NAME=GUI-Cursor
 DATALOADER_NUM_WORKERS=4
+
+TRAINING_DATA_NAME=grounding_train_1225_filter30
+
 #  py-spy record -r 10 -o profile.svg --
 PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
 --config-path=/mnt/ceph_rbd/GUI-Cursor-Moving/cursor/rl/config/ \
@@ -32,7 +35,7 @@ PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
  data.reward_fn_key=overall \
  data.custom_cls.path=./cursor/rl/cursor_dataset.py \
  data.custom_cls.name=CursorStateDataset \
- data.train_files=/mnt/ceph_rbd/data/grounding_train_0714-clean/grounding_train_0714-clean_processed_full.parquet \
+ data.train_files=/mnt/ceph_rbd/data/${TRAINING_DATA_NAME}/${TRAINING_DATA_NAME}_processed_full.parquet \
  data.val_files=/mnt/ceph_rbd/data/ScreenSpot-v2/screenspot_v2_processed_full.parquet \
  data.train_batch_size=$TRAIN_BATCH_SIZE \
  data.max_prompt_length=3072 \
@@ -51,7 +54,7 @@ PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
  actor_rollout_ref.rollout.n=$ROLLOUT_N \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
- actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
+ actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
  actor_rollout_ref.rollout.agent.num_workers=$AGENT_NUM_WORKERS \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
@@ -74,11 +77,15 @@ PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
  trainer.test_freq=20 \
  trainer.total_epochs=250 2>&1 | tee verl_demo.log
 
-#  trainer.resume_mode=resume_path \
-#  trainer.resume_from_path=/mnt/ceph_rbd/GUI-Cursor-Moving/checkpoints/GUI-Cursor/qwen3-bs32n16/global_step_100 \
+# 
 # pkill -9 -f "VLLM::EngineCore"
 # ray stop --force
 # pkill -9 -f ray
+
+#  trainer.resume_mode=resume_path \
+#  trainer.resume_from_path=/mnt/ceph_rbd/GUI-Cursor-Moving/checkpoints/GUI-Cursor/qwen3-bs32n16/global_step_100 \
+#  # /mnt/ceph_rbd/data/grounding_train_0714-clean/grounding_train_0714-clean_processed_full.parquet 
+# /mnt/ceph_rbd/data/grounding_train_1210_filter30/grounding_train_1210_filter30_processed_full.parquet
 # (raylet) Spilled 145510 MiB, 6 objects, write throughput 725 MiB/s.
 # (TaskRunner pid=115964) [CursorAgentLoopManager] ray.get time: 795.35s
 # (TaskRunner pid=334211) [CursorAgentLoopManager] ray.get time: 704.72s

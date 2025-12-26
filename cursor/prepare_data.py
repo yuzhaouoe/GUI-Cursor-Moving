@@ -487,8 +487,26 @@ def draw_and_save():
         print(f"Bbox coords: {bbox_coords}")
 
 
+def unzip_images_and_save():
+    data_path = DATA_DIR / "grounding_train_1225_filter30.json"
+    image_zip_path = DATA_DIR / "grounding_data" / "image.zip"
+    save_image_dir = DATA_DIR / "unzip_images"
+
+    data = json.load(open(data_path, "r"))
+    with zipfile.ZipFile(image_zip_path, "r") as zip_ref:
+        for item in data:
+            image_name = item["image"]
+            if os.path.exists(save_image_dir / image_name):
+                continue
+            with zip_ref.open(os.path.join("image", image_name)) as image_file:
+                image = Image.open(image_file).convert("RGB")
+                image.save(save_image_dir / image_name)
+                print(f"Saved image: {image_name}")
+
+
 if __name__ == "__main__":
-    main()
+    # main()
+    unzip_images_and_save()
     # draw_and_save()
     # dataset = load_ui_vision()
     # from tqdm import tqdm

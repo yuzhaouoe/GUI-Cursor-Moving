@@ -839,13 +839,17 @@ class CursorRayPPOTrainer:
             self.async_rollout_manager = CursorAgentLoopManager(
                 config=self.config, worker_group=self.actor_rollout_wg, rm_wg=self.rm_wg
             )
-        # rollout actor
-        breakpoint()
-
-        from ray.experimental.collective import create_collective_group
-
-        # actor list: self.async_rollout_manager.agent_loop_workers
-
+        # # breakpoint()
+        # from ray.experimental.collective import create_collective_group
+        # # Gather all worker handles
+        # actor_rollout_workers = self.actor_rollout_wg.workers
+        # agent_loop_workers = self.async_rollout_manager.agent_loop_workers
+        # # Create collective group
+        # all_workers = actor_rollout_workers + agent_loop_workers
+        # self.actor_agent_collective_group = create_collective_group(all_workers, backend="NIXL")
+        # print(f"Created collective group with {len(all_workers)} workers:")
+        # print(f"  - {len(actor_rollout_workers)} actor_rollout workers")
+        # print(f"  - {len(agent_loop_workers)} agent_loop workers")
 
     def _save_checkpoint(self):
         from verl.utils.fs import local_mkdir_safe
@@ -1055,7 +1059,8 @@ class CursorRayPPOTrainer:
             batch: DataProto = DataProto.from_single_dict(batch_dict)
 
             # add uid to batch
-            batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
+            # batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
+            print(batch.non_tensor_batch["uid"])
 
             gen_batch = self._get_gen_batch(batch)
 
@@ -1138,7 +1143,6 @@ class CursorRayPPOTrainer:
                 filtered_out_batch = filtered_out_batch.select_idxs(np.arange(need_num_samples * num_trajs))
                 filtered_out_gen_batch = filtered_out_gen_batch.select_idxs(np.arange(need_num_samples))
 
-
         batch_num_samples = 0 if final_batch is None else len(final_batch) // num_trajs
         filtered_num_samples = 0 if filtered_out_batch is None else len(filtered_out_batch) // num_trajs
         print(f"Got {batch_num_samples} samples after {max_times_to_make_a_batch} trials")
@@ -1158,7 +1162,9 @@ class CursorRayPPOTrainer:
                 final_batch = filtered_out_batch.select_idxs(np.arange(need_num_samples * num_trajs))
                 selected_gen_batch = filtered_out_gen_batch.select_idxs(np.arange(need_num_samples))
         elif batch_num_samples > self.config.data.train_batch_size:
-            print(f"{batch_num_samples} more than target size {self.config.data.train_batch_size}, truncate to get the final batch")
+            print(
+                f"{batch_num_samples} more than target size {self.config.data.train_batch_size}, truncate to get the final batch"
+            )
             final_batch = final_batch.select_idxs(np.arange(self.config.data.train_batch_size * num_trajs))
             selected_gen_batch = selected_gen_batch.select_idxs(np.arange(self.config.data.train_batch_size))
         else:

@@ -109,7 +109,7 @@ def observe_get_message_input(processor, state: State):
 
 
 class AsyncVLLMCursorMove(CursorMoveBase):
-    def __init__(self, model_path, tp_size=1, batch_size=None):
+    def __init__(self, model_path, base_model, tp_size=1, batch_size=None):
         super().__init__(model_path)
         from vllm import LLM, SamplingParams
         from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -129,6 +129,7 @@ class AsyncVLLMCursorMove(CursorMoveBase):
             mm_processor_cache_gb=128,
         )
 
+        self.base_model = base_model
         #     @staticmethod
         # def make_async_mp_client(
         #     vllm_config: VllmConfig,
@@ -150,10 +151,15 @@ class AsyncVLLMCursorMove(CursorMoveBase):
         #     return AsyncMPClient(*client_args)
         self.async_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
-        self.processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
+        if base_model == "uitars":
+            self.processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
+        else:
+            self.processor = AutoProcessor.from_pretrained(model_path)
 
         logit_bias: dict = get_logit_bias(self.processor)
-        self.sampling_params = SamplingParams(**{"temperature": 0.0, "max_tokens": 256, "logit_bias": logit_bias})
+
+        max_tokens = 2048 if base_model == "qwen3" else 256
+        self.sampling_params = SamplingParams(**{"temperature": 0.0, "max_tokens": max_tokens, "logit_bias": logit_bias})
 
     async def async_predict_single(self, state: State) -> dict:
         """Async prediction for a single state"""
@@ -280,13 +286,15 @@ def init_environment_and_state(
     init_position=None,
     focus_type=None,
     move_until_max_steps=False,
-    base_model_name="qwen2_5"
+    base_model_name="qwen2_5",
+    cursor_reshape_factor=None
 ) -> State:
     if cursor_image is None:
         cursor_image = Image.open("cursor/resources/cursor-icon-cropped.png").convert("RGBA")
-        # resize to 80%
-        # cursor_size = cursor_image.size
-        # cursor_image = cursor_image.resize((int(cursor_size[0] * 0.8), int(cursor_size[1] * 0.8)))
+        if cursor_reshape_factor is not None:
+            # resize to cursor_reshape_factor
+            cursor_size = cursor_image.size
+            cursor_image = cursor_image.resize((int(cursor_size[0] * cursor_reshape_factor), int(cursor_size[1] * cursor_reshape_factor)))
 
     environment = Environment(
         screenshot=example["image"],
@@ -339,8 +347,9 @@ def get_args():
     parser.add_argument("--max_steps", type=int, default=4)
     parser.add_argument("--max_examples", type=int, default=None)
     parser.add_argument("--move_until_max_steps", action="store_true")
-    parser.add_argument("--base_model", type=str, choices=["qwen", "uitars"], default="qwen")
+    parser.add_argument("--base_model", type=str, choices=["qwen", "uitars", "qwen3"], default="qwen")
     parser.add_argument("--cursor_focus_sizes", type=float, default=1920 * 1080)
+    parser.add_argument("--cursor_reshape_factor", type=float, default=None)
     # parser.add_argument("--disable_mm_preprocessor_cache", action="store_true")
     return parser.parse_args()
 
@@ -397,6 +406,7 @@ async def async_main():
         max_examples = None
         move_until_max_steps = False
         base_model = "qwen"
+        cursor_reshape_factor = None
     else:
         args = get_args()
         batch_size = args.batch_size
@@ -416,12 +426,13 @@ async def async_main():
         max_examples = args.max_examples
         move_until_max_steps = args.move_until_max_steps
         base_model = args.base_model
+        cursor_reshape_factor = args.cursor_reshape_factor
 
     iter_dataset = load_iterable_dataset(dataset_name, max_examples=max_examples)
 
     # Initialize async model
     if use_vllm:
-        model = AsyncVLLMCursorMove(model_path=model_path, tp_size=tp_size, batch_size=batch_size)
+        model = AsyncVLLMCursorMove(model_path=model_path, base_model=base_model, tp_size=tp_size, batch_size=batch_size)
     else:
         model = AsyncSGLangCursorMove(model_path=model_path, tp_size=tp_size, batch_size=batch_size)
 
@@ -438,6 +449,12 @@ async def async_main():
         reply_prompt_format = ""
         action_extractor_fn = ACTION_EXTRACTOR_FN["uitars_action"]
         message_history_update_fn = MESSAGE_HISTORY_UPDATE_FN["qwen"]  # same to qwen
+    elif base_model == "qwen3":
+        system_prompt_format = open("cursor/prompts/qwen3_system_prompt.txt", "r").read()
+        first_turn_prompt_format = open("cursor/prompts/query_prompt.txt", "r").read()
+        reply_prompt_format = ""
+        action_extractor_fn = ACTION_EXTRACTOR_FN["coord_answer_tag"]
+        message_history_update_fn = MESSAGE_HISTORY_UPDATE_FN["qwen"]
     output_dir = Path("outputs") / dataset_name / exp_name
 
     assert not os.path.exists(output_dir / "predictions.jsonl")
@@ -496,6 +513,8 @@ async def async_main():
                 focus_type="within_image",
                 max_steps=max_steps,
                 move_until_max_steps=move_until_max_steps,
+                cursor_reshape_factor=cursor_reshape_factor,
+                base_model_name="qwen3" if base_model == "qwen3" else "qwen2_5",
             )
 
             # Start async trajectory

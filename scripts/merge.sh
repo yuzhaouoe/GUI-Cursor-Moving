@@ -6,6 +6,6 @@
 
 python -m verl.model_merger merge \
     --backend fsdp \
-    --local_dir /mnt/ceph_rbd/GUI-Cursor-Moving/checkpoints/GUI-Cursor/uitars-bs32n12-hint-to-move/global_step_200/actor \
-    --target_dir /mnt/ceph_rbd/models/new_trained/GUI-Cursor-uitars-from100-hint-to-move-to200steps
+    --local_dir /mnt/ceph_rbd/GUI-Cursor-Moving/checkpoints/GUI-Cursor/qwen3-bs32n16-1210-1step/global_step_180/actor \
+    --target_dir /mnt/ceph_rbd/models/new_trained/GUI-Cursor-ablation1step-Qwen3-VL-2B-Thinking
 

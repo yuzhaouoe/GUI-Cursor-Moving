@@ -64,6 +64,7 @@ from cursor.move_loop import observe_get_raw_message_input, observe_get_message_
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 import time
 
+# from cursor.rl.dist_dataproto import DistDataProto
 
 def process_multi_modal_sample(idx, input_ids, images, tokenizer, processor):
     current_text = tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
@@ -550,7 +551,7 @@ class CursorLoopWorker(AgentLoopWorkerBase):
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         # multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
         # if any(mmi is not None for mmi in multi_modal_inputs_list):
-        #     non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
+        #     non_tensor_batch["multi_modal_inputs"] = multi_modal_inputs_list  # np.array(multi_modal_inputs_list, dtype=object)
         non_tensor_batch["multi_modal_data"] = np.array([input.multi_modal_data for input in inputs], dtype=object)
 
         metrics = [input.metrics.model_dump() for input in inputs]
@@ -793,7 +794,7 @@ class CursorLoopWorker(AgentLoopWorkerBase):
                 response_mask=response_mask,
                 attention_mask=attention_mask,
                 response_logprobs=response_logprobs,
-                multi_modal_inputs=None,  # multi_modal_inputs,
+                multi_modal_inputs=multi_modal_inputs, # None,  # multi_modal_inputs,
                 multi_modal_data=multi_modal_data,  # output.multi_modal_data,
                 reward_score=reward_score,
                 num_turns=num_turns,
@@ -839,6 +840,8 @@ class CursorAgentLoopManager(AgentLoopManager):
         # if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
         #     self.reward_model_manager.wake_up()
 
+        start_time = time.perf_counter()
+
         chunkes = prompts.chunk(len(self.agent_loop_workers))
 
         start_get_time = time.perf_counter()
@@ -853,8 +856,10 @@ class CursorAgentLoopManager(AgentLoopManager):
         ref_to_index = {ref: idx for idx, ref in enumerate(workers_outputs_refs)}
 
         # get_time = time.perf_counter()
-        processing_futures = []
-        processing_executor = ThreadPoolExecutor(max_workers=len(self.agent_loop_workers))
+        post_process_multi_modal = False
+        if post_process_multi_modal:
+            processing_futures = []
+            processing_executor = ThreadPoolExecutor(max_workers=len(self.agent_loop_workers))
         
         while workers_outputs_refs:
             ready_object_refs, workers_outputs_refs = ray.wait(workers_outputs_refs, num_returns=1)
@@ -862,26 +867,33 @@ class CursorAgentLoopManager(AgentLoopManager):
             original_idx = ref_to_index[ready_object_refs[0]]
             cur_outputs = worker_outputs[0]
 
-            # Process multi-modal inputs using ThreadPoolExecutor in background
-            # 1. submit
-            future = processing_executor.submit(
+            if post_process_multi_modal:
+                # Process multi-modal inputs using ThreadPoolExecutor in background
+                # 1. submit
+                future = processing_executor.submit(
                 process_dataproto_multi_modal_inputs,
-                cur_outputs, 
-                self.tokenizer, 
-                self.processor
-            )
-            processing_futures.append((original_idx, cur_outputs, future))
-            
+                    cur_outputs,
+                    self.tokenizer, 
+                    self.processor
+                )
+                processing_futures.append((original_idx, cur_outputs, future))
+            else:
+                outputs[original_idx] = cur_outputs
 
-        # 2. wait process
-        wait([future for _, _, future in processing_futures])
+        if post_process_multi_modal:
+            # 2. wait process
+            wait([future for _, _, future in processing_futures])
 
-        # 3. collect results
-        for original_idx, cur_outputs, future in processing_futures:
-            future.result()  # Ensure no exceptions, output already modified in-place
-            outputs[original_idx] = cur_outputs
+            # 3. collect results
+            for original_idx, cur_outputs, future in processing_futures:
+                future.result()  # Ensure no exceptions, output already modified in-place
+                outputs[original_idx] = cur_outputs
 
         # processing_executor.shutdown(wait=True)
+
+        end_time = time.perf_counter()
+        processing_time = end_time - start_time
+        print(f"[CursorAgentLoopManager] Total processing time: {processing_time:.2f}s")
 
         output = DataProto.concat(outputs)
 
