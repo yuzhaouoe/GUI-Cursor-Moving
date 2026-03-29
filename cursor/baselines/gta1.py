@@ -73,7 +73,7 @@ def prepare_input(sample, processor):
         "inputs": inputs,
         "bbox_coords": bbox_coords,
         "item_idx": sample["item_idx"],
-        "data_source": sample["data_source"],
+        "data_source": sample.get("data_source"),
         "image": image,
         "query": instruction,
         "bbox_coords_list": bbox_coords_list,
@@ -140,10 +140,13 @@ def inference():
     max_new_tokens = 32
     # dataset_name = "UI-Vision"
     # dataset_name = "OSWorld-G_refined"
-    dataset_name = "Multimodal-Mind2Web"
+    # dataset_name = "Multimodal-Mind2Web"
+    # dataset_name = "ScreenSpot-v2"
+    dataset_name = "ScreenSpot-Pro"
 
 
-    exp_name = "GTA1-7B"
+
+    exp_name = "GTA1-7B-icml-speed"
 
     model_path = "/mnt/ceph_rbd/models/GTA1-7B"
     batch_size = 128
@@ -177,6 +180,10 @@ def inference():
     batch = []
     predictions = []
     correctness = []
+
+    import time
+
+    start_time = time.time()
 
     while True:
         while len(batch) < batch_size:
@@ -212,9 +219,16 @@ def inference():
                 f.write(
                     json.dumps({"item_idx": item_idx, "prediction": p, "within_bbox_history": [c], "data_source": s}) + "\n"
                 )
-
+        cur_time = time.time()
+        print(f"Processed {len(correctness)} samples in {cur_time - start_time:.2f} seconds. Throughput: {len(correctness) / (cur_time - start_time):.2f} samples/sec.")
         batch = []
 
+    # Throughput calculation
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"Total processing time: {total_time:.2f} seconds")
+    print(f"Final accuracy: {sum(correctness) / len(correctness):.3%}")
+    print(f"Overall throughput: {len(correctness) / total_time:.2f} samples/sec")
 
 if __name__ == "__main__":
     inference()

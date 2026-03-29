@@ -16,3 +16,5 @@ tmp.jsonl
 tmp.json
 tmp.png
 tmp.txt
+judge_taget_is_in_image/dataset/
+judge_target_is_in_image/debug/

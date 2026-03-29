@@ -1,7 +1,10 @@
-MODEL_PATH=/mnt/ceph_rbd/models/new_trained/GUI-Cursor-ablation1step-Qwen3-VL-2B-Thinking
-EXP_NAME="Qwen3-VL-2B-Thinking-1210-180steps-ablation1step"
+# MODEL_PATH=/mnt/ceph_rbd/models/new_trained/GUI-Cursor-ablation1step-Qwen3-VL-2B-Thinking
+# EXP_NAME="Qwen3-VL-2B-Thinking-1210-180steps-ablation1step"
 
-GPU_IDX=4
+MODEL_PATH=/mnt/ceph_rbd/model/new_trained/GUI-Cursor-Qwen3-VL-2B-Thinking-1210
+EXP_NAME=debug # GUI-Cursor-Qwen3-VL-2B-Thinking-1210-4steps
+MAX_STEPS=4
+GPU_IDX=2
 BASE_MODEL="qwen3"
 
 # CUDA_VISIBLE_DEVICES=${GPU_IDX} python cursor/move_loop.py \
@@ -14,7 +17,7 @@ BASE_MODEL="qwen3"
 #     --model_path ${MODEL_PATH} \
 #     --max_steps 1
 
-dataset_name=("ScreenSpot-v2" "ScreenSpot-Pro" "OSWorld-G_refined" "UI-Vision")
+dataset_name=("ScreenSpot-v2" "ScreenSpot-Pro" "OSWorld-G_refined") #  "OSWorld-G_refined" "UI-Vision"
 
 # EXP_NAME="Qwen3-VL-2B-Thinking-1210-180steps-factor07"
 
@@ -27,6 +30,6 @@ for ds in "${dataset_name[@]}"; do
     --use_vllm \
     --use_async \
     --model_path ${MODEL_PATH} \
-    --max_steps 1
+    --max_steps ${MAX_STEPS}
 done
     # --cursor_reshape_factor 0.7 \

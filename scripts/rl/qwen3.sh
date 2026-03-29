@@ -8,16 +8,20 @@ export VLLM_USE_V1=1
 
 MAX_TURNS=4
 TRAIN_BATCH_SIZE=32
-ROLLOUT_N=16
+ROLLOUT_N=12
 AGENT_NUM_WORKERS=8
 # PPO_MINI_BATCH_SIZE=$((TRAIN_BATCH_SIZE * ROLLOUT_N))
 # ACTOR_DTYPE=bfloat16
 ACTOR_DTYPE=fp32
-EXP_NAME=qwen3-bs32n16-1210-1step # qwen3-bs32n16-speedup # qwen3-bs32n16-from100 # debug # bs32n12
+EXP_NAME=qwen3-bs32n12-1210-4steps # qwen3-bs32n16-speedup # qwen3-bs32n16-from100 # debug # bs32n12
 PROJECT_NAME=GUI-Cursor
 DATALOADER_NUM_WORKERS=4
 
 TRAINING_DATA_NAME=grounding_train_1225_filter30
+
+BASE_MODEL=/mnt/ceph_rbd/models/Qwen/Qwen3-VL-2B-Thinking
+
+# Qwen/Qwen3-VL-8B-Instruct
 
 #  py-spy record -r 10 -o profile.svg --
 PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
@@ -43,11 +47,11 @@ PYTHONUNBUFFERED=1 python -m cursor.rl.entry \
  data.return_raw_chat=true \
  data.dataloader_num_workers=$DATALOADER_NUM_WORKERS \
  actor_rollout_ref.actor.fsdp_config.model_dtype=$ACTOR_DTYPE \
- actor_rollout_ref.model.path=/mnt/ceph_rbd/models/Qwen/Qwen3-VL-2B-Thinking \
+ actor_rollout_ref.model.path=$BASE_MODEL \
  actor_rollout_ref.actor.use_kl_loss=false \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_BATCH_SIZE \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
  actor_rollout_ref.rollout.mode=async \
  actor_rollout_ref.rollout.max_model_len=32768 \
  actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
